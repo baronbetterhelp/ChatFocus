@@ -1,5 +1,7 @@
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
+const LAST_CHAT_PREFIX = "chatfocus-last-chat:";
+
 
 function ensureAdminImageLimitControls(){
   if($("#adminImageUploadsEnabled") && $("#adminDailyImageLimit") && $("#adminMaxImageMb")) return;
@@ -18,7 +20,7 @@ const state = {
 };
 
 const els = {
-  authView:$("#authView"),appView:$("#appView"),authForm:$("#authForm"),authName:$("#authName"),authEmail:$("#authEmail"),authPassword:$("#authPassword"),nameField:$("#nameField"),authTitle:$("#authTitle"),authSubtitle:$("#authSubtitle"),authSubmit:$("#authSubmit"),authSwitch:$("#authSwitch"),
+  bootView:$("#bootView"),authView:$("#authView"),appView:$("#appView"),authForm:$("#authForm"),authName:$("#authName"),authEmail:$("#authEmail"),authPassword:$("#authPassword"),nameField:$("#nameField"),authTitle:$("#authTitle"),authSubtitle:$("#authSubtitle"),authSubmit:$("#authSubmit"),authSwitch:$("#authSwitch"),
   sidebar:$("#sidebar"),sidebarBackdrop:$("#sidebarBackdrop"),pinnedChatList:$("#pinnedChatList"),recentChatList:$("#recentChatList"),pinnedSection:$("#pinnedSection"),chatSearch:$("#chatSearch"),currentChatTitle:$("#currentChatTitle"),messageList:$("#messageList"),messagesScroller:$("#messagesScroller"),composer:$("#composer"),fileInput:$("#fileInput"),cameraInput:$("#cameraInput"),photoInput:$("#photoInput"),attachMenu:$("#attachMenu"),attachMenuBtn:$("#attachMenuBtn"),attachmentTray:$("#attachmentTray"),sendBtn:$("#sendBtn"),stopBtn:$("#stopBtn"),webToggle:$("#webToggle"),adminNav:$("#adminNav"),chatView:$("#chatView"),libraryView:$("#libraryView"),projectsView:$("#projectsView"),scheduledView:$("#scheduledView"),adminView:$("#adminView"),accountPanel:$("#accountPanel")
 };
 
@@ -26,9 +28,18 @@ boot();
 
 async function boot(){
   applyTheme(); bindEvents();
-  const res=await fetch("/api/me",{credentials:"include",cache:"no-store"});
-  if(res.ok){ const data=await res.json(); state.user=data.user; state.settings=data.settings; await enterApp(); }
-  else showAuth();
+  try{
+    const res=await fetch("/api/me",{credentials:"include",cache:"no-store"});
+    if(res.ok){
+      const data=await res.json();
+      state.user=data.user; state.settings=data.settings;
+      await enterApp();
+      return;
+    }
+  }catch(e){
+    console.warn("Session check failed",e);
+  }
+  showAuth();
 }
 
 function bindEvents(){
@@ -94,10 +105,28 @@ function bindEvents(){
   document.addEventListener("drop",e=>{if(e.dataTransfer?.files?.length)handleFiles([...e.dataTransfer.files])});
 }
 
-function showAuth(){els.appView.classList.add("hidden");els.authView.classList.remove("hidden")}
+function showAuth(){els.bootView?.classList.add("hidden");els.appView.classList.add("hidden");els.authView.classList.remove("hidden")}
 function toggleAuthMode(){state.authMode=state.authMode==="login"?"signup":"login";const sign=state.authMode==="signup";els.nameField.classList.toggle("hidden",!sign);els.authName.required=sign;els.authPassword.autocomplete=sign?"new-password":"current-password";els.authTitle.textContent=sign?"Create your account":"Welcome back";els.authSubtitle.textContent=sign?"Your chats, images and files stay connected to your workspace.":"Continue your conversations, files and visual work.";els.authSubmit.querySelector("span").textContent=sign?"Create account":"Sign in";els.authSwitch.textContent=sign?"Already have an account? Sign in":"New to ChatFocus? Create an account"}
 async function onAuthSubmit(e){e.preventDefault();const body={email:els.authEmail.value,password:els.authPassword.value,...(state.authMode==="signup"?{name:els.authName.value}:{})};setButtonBusy(els.authSubmit,true);const r=await api(`/api/auth/${state.authMode}`,{method:"POST",body});setButtonBusy(els.authSubmit,false);if(!r.ok)return toast(r.error||"Unable to continue","error");state.user=r.user;const me=await api("/api/me");state.settings=me.settings;await enterApp()}
-async function enterApp(){els.authView.classList.add("hidden");els.appView.classList.remove("hidden");const initial=(state.user.name||"C").trim()[0].toUpperCase();$("#accountName").textContent=state.user.name;$("#accountEmail").textContent=state.user.email;$("#avatar").textContent=initial;$("#accountNameLarge").textContent=state.user.name;$("#accountEmailLarge").textContent=state.user.email;$("#accountAvatarLarge").textContent=initial;syncAccountLabels();if(state.user.role==="admin"){els.adminNav.classList.remove("hidden");$("#accountAdminSection").classList.remove("hidden")}if(state.settings?.web_search_enabled){els.webToggle.classList.remove("hidden");syncWebUI()}else{setWebSearch(false,{silent:true,persist:false});els.webToggle.classList.add("hidden")}await loadChats();if(state.chats.length)await openChat(state.chats[0].id);else await newChat(false)}
+async function enterApp(){
+  els.authView.classList.add("hidden");
+  // Prepare the authenticated app behind the launch gate so the user never sees the login card or a random chat flash.
+  els.appView.classList.remove("hidden");
+  const initial=(state.user.name||"C").trim()[0].toUpperCase();
+  $("#accountName").textContent=state.user.name;$("#accountEmail").textContent=state.user.email;$("#avatar").textContent=initial;
+  $("#accountNameLarge").textContent=state.user.name;$("#accountEmailLarge").textContent=state.user.email;$("#accountAvatarLarge").textContent=initial;
+  syncAccountLabels();
+  if(state.user.role==="admin"){els.adminNav.classList.remove("hidden");$("#accountAdminSection").classList.remove("hidden")}
+  if(state.settings?.web_search_enabled){els.webToggle.classList.remove("hidden");syncWebUI()}else{setWebSearch(false,{silent:true,persist:false});els.webToggle.classList.add("hidden")}
+  await loadChats();
+  // Always resume the conversation this account actually had open last. Never default to a pinned/random chat.
+  const rememberedId=getLastChatId();
+  const remembered=rememberedId&&state.chats.some(c=>c.id===rememberedId);
+  let opened=false;
+  if(remembered)opened=await openChat(rememberedId);
+  if(!opened)await newChat(false);
+  requestAnimationFrame(()=>els.bootView?.classList.add("hidden"));
+}
 
 async function api(url,{method="GET",body,headers}={}){try{const opts={method,credentials:"include",cache:"no-store",headers:{...(body instanceof FormData?{}:{"content-type":"application/json"}),...(headers||{})}};if(body!==undefined)opts.body=body instanceof FormData?body:JSON.stringify(body);const r=await fetch(url,opts);const ct=r.headers.get("content-type")||"";const data=ct.includes("application/json")?await r.json():{text:await r.text()};return {ok:r.ok,status:r.status,...data}}catch(e){return{ok:false,error:e.message||"Network error"}}}
 
@@ -141,6 +170,11 @@ function showChatMenu(row,c){
   layer.addEventListener("pointerdown",e=>{if(e.target===layer)closeChatMenus()});
   menu.onclick=async e=>{const b=e.target.closest("[data-a]");if(!b)return;const a=b.dataset.a;closeChatMenus();if(a==="rename")await renameChat(c);if(a==="pin")await pinChat(c);if(a==="project")await moveChatToProject(c);if(a==="delete")await deleteChat(c)};
 }
+function lastChatKey(){return LAST_CHAT_PREFIX+(state.user?.id||state.user?.email||"guest")}
+function getLastChatId(){try{return localStorage.getItem(lastChatKey())||""}catch{return ""}}
+function rememberLastChat(id){if(!id)return;try{localStorage.setItem(lastChatKey(),String(id))}catch{}}
+function forgetLastChat(id=null){try{const key=lastChatKey();if(!id||localStorage.getItem(key)===String(id))localStorage.removeItem(key)}catch{}}
+
 async function newChat(focus=true,projectId=null){
   if(state.generating)return toast("Stop the current response first.");
   // Make the UI react immediately. The network-created chat is resolved in the background.
@@ -154,7 +188,7 @@ async function newChat(focus=true,projectId=null){
   if(state.chatCreatePromise===create)state.chatCreatePromise=null;
   if(!r.ok){state.currentChat=previous.chat;state.messages=previous.messages;state.pending=previous.pending;renderAttachments();renderMessages();if(previous.chat)setWorkspaceHeading(previous.chat.title,"CFocus 1.0");toast(r.error||"Could not start a new chat","error");return null}
   // Only replace the temporary chat if the user is still on it.
-  if(state.currentChat?._pending){state.currentChat=r.chat;state.chatCache.set(r.chat.id,{chat:r.chat,messages:[],at:Date.now()});}
+  if(state.currentChat?._pending){state.currentChat=r.chat;state.chatCache.set(r.chat.id,{chat:r.chat,messages:[],at:Date.now()});rememberLastChat(r.chat.id);}
   if(!state.chats.some(c=>c.id===r.chat.id)){state.chats.unshift(r.chat);renderChats(els.chatSearch.value)}
   return r.chat;
 }
@@ -164,13 +198,19 @@ async function ensureCurrentChatReady(){
   return await newChat(false);
 }
 function applyChatData(chat,messages){
-  state.currentChat=chat; state.messages=messages||[]; state.pending=[]; renderAttachments(); renderMessages(); els.currentChatTitle.textContent=chat.title; renderChats(els.chatSearch.value); switchView("chat"); closeSidebar(); scrollBottom(false)
+  state.currentChat=chat; state.messages=messages||[]; state.pending=[]; rememberLastChat(chat?.id); renderAttachments(); renderMessages(); els.currentChatTitle.textContent=chat.title; renderChats(els.chatSearch.value); switchView("chat"); closeSidebar(); scrollBottom(false)
 }
-async function openChat(id){
-  if(state.generating){toast("Stop the current response before switching chats.");return}
+async function openChat(id,{fallbackToNew=false}={}){
+  if(state.generating){toast("Stop the current response before switching chats.");return false}
   const cached=state.chatCache.get(id); if(cached)applyChatData(cached.chat,cached.messages);
-  const r=await api(`/api/chats/${id}`); if(!r.ok){if(!cached)toast(r.error||"Could not open chat","error");return}
-  state.chatCache.set(id,{chat:r.chat,messages:r.messages||[],at:Date.now()}); applyChatData(r.chat,r.messages||[]); maybeRetitleExistingChat(r.chat,r.messages||[])
+  const r=await api(`/api/chats/${id}`);
+  if(!r.ok){
+    if(!cached)toast(r.error||"Could not open chat","error");
+    forgetLastChat(id);
+    if(fallbackToNew)await newChat(false);
+    return false;
+  }
+  state.chatCache.set(id,{chat:r.chat,messages:r.messages||[],at:Date.now()}); applyChatData(r.chat,r.messages||[]); maybeRetitleExistingChat(r.chat,r.messages||[]); return true
 }
 async function maybeRetitleExistingChat(chat,messages){const generic=/^(new chat|hello|hi|hey|question|conversation|file analysis)$/i.test((chat.title||"").trim());if(!chat.auto_title||!generic||(messages||[]).length<2)return;const r=await api(`/api/chats/${chat.id}/retitle`,{method:"POST",body:{}});if(r.ok&&r.chat){const i=state.chats.findIndex(c=>c.id===chat.id);if(i>=0)state.chats[i]={...state.chats[i],...r.chat};if(state.currentChat?.id===chat.id){state.currentChat={...state.currentChat,...r.chat};els.currentChatTitle.textContent=r.chat.title}renderChats(els.chatSearch.value)}}
 
@@ -286,7 +326,7 @@ async function renameChat(c){const title=prompt("Rename this chat",c.title);if(t
 async function pinCurrentChat(){if(state.currentChat)pinChat(state.currentChat)}
 async function pinChat(c){const r=await api(`/api/chats/${c.id}`,{method:"PATCH",body:{pinned:!c.pinned}});if(!r.ok)return toast(r.error,"error");if(state.currentChat?.id===c.id)state.currentChat=r.chat;await loadChats()}
 async function deleteCurrentChat(){if(state.currentChat)deleteChat(state.currentChat)}
-async function deleteChat(c){const ok=await confirmBox("Delete chat?",`“${c.title}” and its uploaded files will be permanently deleted.`);if(!ok)return;const r=await api(`/api/chats/${c.id}`,{method:"DELETE"});if(!r.ok)return toast(r.error,"error");state.chatCache.delete(c.id);if(state.currentChat?.id===c.id){state.currentChat=null;state.messages=[]}await loadChats();if(!state.currentChat){if(state.chats.length)await openChat(state.chats[0].id);else await newChat(false)}}
+async function deleteChat(c){const ok=await confirmBox("Delete chat?",`“${c.title}” and its uploaded files will be permanently deleted.`);if(!ok)return;const r=await api(`/api/chats/${c.id}`,{method:"DELETE"});if(!r.ok)return toast(r.error,"error");state.chatCache.delete(c.id);forgetLastChat(c.id);if(state.currentChat?.id===c.id){state.currentChat=null;state.messages=[]}await loadChats();if(!state.currentChat)await newChat(false)}
 
 function setWorkspaceHeading(title,subtitle=""){$("#currentChatTitle").textContent=title;$("#modelLabel").textContent=subtitle;$("#modelLabel").classList.toggle("hidden",!subtitle)}
 function switchView(view){

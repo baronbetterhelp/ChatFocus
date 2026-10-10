@@ -8,12 +8,20 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>ChatFocus</title>
-  <link rel="stylesheet" href="/styles.css?v=1.19" />
+  <link rel="stylesheet" href="/styles.css?v=1.20" />
 </head>
 <body>
   <div id="toastHost" class="toast-host"></div>
 
-  <section id="authView" class="auth-view">
+  <section id="bootView" class="boot-view" aria-label="Opening ChatFocus">
+    <div class="boot-brand" aria-hidden="true">
+      <span class="brand-mark xl"><i></i><b></b><span></span></span>
+      <strong>ChatFocus</strong>
+    </div>
+    <div class="boot-progress" aria-hidden="true"><i></i></div>
+  </section>
+
+  <section id="authView" class="auth-view hidden">
     <div class="auth-orb orb-a"></div><div class="auth-orb orb-b"></div>
     <div class="auth-brand">
       <div class="brand-mark xl"><i></i><b></b><span></span></div>
@@ -408,6 +416,6 @@
     <div class="modal-card"><h3 id="confirmTitle">Delete chat?</h3><p id="confirmText">This action cannot be undone.</p><div class="modal-actions"><button id="confirmCancel" class="secondary-btn">Cancel</button><button id="confirmOk" class="danger-btn">Delete</button></div></div>
   </div>
 
-  <script src="/app.js?v=1.19" type="module"></script>
+  <script src="/app.js?v=1.20" type="module"></script>
 </body>
 </html>
