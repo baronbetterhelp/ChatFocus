@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.9";
+const CHATFOCUS_RELEASE = "V1.11";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -393,6 +393,7 @@ async function regenerateAndStream(request, env, ctx, user, chatId) {
 
 async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requestedWeb, requestedIntelligence) {
   if (!env.OPENAI_API_KEY) return json({ error: "OPENAI_API_KEY is not configured on the server." }, 503);
+  const responseStartedAt = Date.now();
   const assistantId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
   try {
@@ -447,24 +448,25 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
             }
           }
           if (!finalText.trim()) finalText = "I couldn't produce a response for that request. Please try again.";
-          await env.DB.prepare("UPDATE messages SET content=?,status='complete',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(finalText,assistantId).run();
+          const responseTimeMs = Math.max(1, Date.now() - responseStartedAt);
+          await env.DB.prepare("UPDATE messages SET content=?,status='complete',response_time_ms=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(finalText,responseTimeMs,assistantId).run();
           await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
           if (usage) {
             await env.DB.prepare("INSERT INTO usage_events(id,user_id,chat_id,model,input_tokens,output_tokens,total_tokens) VALUES(?,?,?,?,?,?,?)")
               .bind(crypto.randomUUID(),user.id,chatId,env.OPENAI_MODEL || "gpt-6-luna",Number(usage.input_tokens||0),Number(usage.output_tokens||0),Number(usage.total_tokens||0)).run();
           }
-          send({ type: "done", message_id: assistantId, response_id: responseId, usage });
+          send({ type: "done", message_id: assistantId, response_id: responseId, usage, response_time_ms: responseTimeMs });
           ctx.waitUntil(updateChatMetadata(env,user,chatId).catch(console.error));
           controller.close();
         } catch (err) {
-          await env.DB.prepare("UPDATE messages SET content=?,status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(finalText || "Generation interrupted.",assistantId).run().catch(()=>null);
+          await env.DB.prepare("UPDATE messages SET content=?,status='error',response_time_ms=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(finalText || "Generation interrupted.",Math.max(1,Date.now()-responseStartedAt),assistantId).run().catch(()=>null);
           send({ type: "error", error: safeError(err) }); controller.close();
         }
       }
     });
     return new Response(bodyStream, { headers: { "content-type":"application/x-ndjson; charset=utf-8", "cache-control":"no-cache, no-transform", "x-accel-buffering":"no" } });
   } catch (err) {
-    await env.DB.prepare("UPDATE messages SET status='error',content=? WHERE id=?").bind(safeError(err),assistantId).run().catch(()=>null);
+    await env.DB.prepare("UPDATE messages SET status='error',content=?,response_time_ms=? WHERE id=?").bind(safeError(err),Math.max(1,Date.now()-responseStartedAt),assistantId).run().catch(()=>null);
     return json({ error: safeError(err) }, 500);
   }
 }
