@@ -43,14 +43,17 @@ function bindEvents(){
   $("#renameChatBtn").addEventListener("click",renameCurrentChat); $("#pinChatBtn").addEventListener("click",pinCurrentChat); $("#deleteChatBtn").addEventListener("click",deleteCurrentChat);
   $("#accountBtn").addEventListener("click",openAccountPanel);
   $("#closeAccountPanel").addEventListener("click",closeAccountPanel);
-  $("#logoutBtn").addEventListener("click",logout); $("#themeToggle").addEventListener("click",cycleTheme); $("#memoryToggleMenu").addEventListener("click",toggleMyMemory);
+  $("#logoutBtn").addEventListener("click",logout);
+  $("#themeToggle").addEventListener("click",()=>openSettingsDetail("appearance"));
+  $("#memoryToggleMenu").addEventListener("click",()=>openSettingsDetail("memory"));
   $("#settingsSearch").addEventListener("input",filterSettings);
-  $("#dictationSettings").addEventListener("click",()=>toast("Use the microphone button in chat whenever you want to dictate a message."));
-  $("#languageSettings").addEventListener("click",()=>toast("ChatFocus currently uses English for the interface."));
-  $("#savedChatsInfo").addEventListener("click",()=>toast("Your conversations are saved automatically to your account."));
-  $("#storageInfo").addEventListener("click",()=>toast("Uploaded images, PDFs and documents are stored privately."));
-  $("#modelInfo").addEventListener("click",()=>toast("You are using ChatFocus V1.8 with CFocus 1.0."));
-  $("#privacyInfo").addEventListener("click",()=>toast("Your account data and uploaded files are not exposed publicly."));
+  $("#dictationSettings").addEventListener("click",()=>openSettingsDetail("dictation"));
+  $("#languageSettings").addEventListener("click",()=>openSettingsDetail("language"));
+  $("#savedChatsInfo").addEventListener("click",()=>openSettingsDetail("conversations"));
+  $("#storageInfo").addEventListener("click",()=>openSettingsDetail("storage"));
+  $("#modelInfo").addEventListener("click",()=>openSettingsDetail("model"));
+  $("#privacyInfo").addEventListener("click",()=>openSettingsDetail("privacy"));
+  $(".settings-profile-card").addEventListener("click",()=>openSettingsDetail("profile"));
   els.accountPanel.addEventListener("click",e=>{if(e.target===els.accountPanel)closeAccountPanel()});
   $("#accountAdminBtn").addEventListener("click",()=>{closeAccountPanel();switchView("admin")});
   $("#adminNav").addEventListener("click",()=>switchView("admin"));
@@ -68,8 +71,8 @@ function bindEvents(){
   $("#adminRefresh").addEventListener("click",loadAdmin); $("#adminUserSearch").addEventListener("input",debounce(loadAdminUsers,280)); $("#saveAdminSettings").addEventListener("click",saveAdminSettings);
   $$(".suggestion").forEach(b=>b.addEventListener("click",()=>{els.composer.value=b.dataset.prompt||"";autoGrow();els.composer.focus();}));
   $("#confirmCancel").addEventListener("click",()=>closeConfirm(false));
-  document.addEventListener("click",e=>{if(!e.target.closest(".chat-row")) $$(".chat-menu").forEach(x=>x.remove());if(!e.target.closest(".attach-menu-wrap"))closeAttachMenu();});
-  window.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){e.preventDefault();newChat(true)} if(e.key==="Escape"){if(!els.attachMenu.classList.contains("hidden"))closeAttachMenu();else if(!els.accountPanel.classList.contains("hidden"))closeAccountPanel();else closeSidebar()}});
+  document.addEventListener("click",e=>{if(!e.target.closest(".chat-row")&&!e.target.closest(".chat-menu"))closeChatMenus();if(!e.target.closest(".attach-menu-wrap"))closeAttachMenu();});
+  window.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){e.preventDefault();newChat(true)} if(e.key==="Escape"){if(!els.attachMenu.classList.contains("hidden"))closeAttachMenu();else if($("#settingsDetail")&&!$("#settingsDetail").classList.contains("hidden"))closeSettingsDetail();else if(!els.accountPanel.classList.contains("hidden"))closeAccountPanel();else closeSidebar()}});
   ["dragenter","dragover"].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();if(state.user)$("#dropHint").classList.remove("hidden")}));
   ["dragleave","drop"].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();$("#dropHint").classList.add("hidden")}));
   document.addEventListener("drop",e=>{if(e.dataTransfer?.files?.length)handleFiles([...e.dataTransfer.files])});
@@ -108,10 +111,19 @@ async function prefetchChat(id){
   if(state.chatCache.has(id))return;
   const r=await api(`/api/chats/${id}`); if(r.ok)state.chatCache.set(id,{chat:r.chat,messages:r.messages||[],at:Date.now()});
 }
+function closeChatMenus(){document.querySelectorAll(".chat-menu-layer").forEach(x=>x.remove());document.querySelectorAll(".chat-menu").forEach(x=>x.remove())}
 function showChatMenu(row,c){
-  $$('.chat-menu').forEach(x=>x.remove()); const menu=document.createElement("div"); menu.className="chat-menu";
-  menu.innerHTML=`<button data-a="rename">Rename</button><button data-a="pin">${c.pinned?"Unpin":"Pin"}</button><button data-a="project">Move to project</button><button data-a="delete" class="danger-text">Delete</button>`;
-  menu.onclick=async e=>{const a=e.target.dataset.a;if(!a)return;if(a==="rename")await renameChat(c);if(a==="pin")await pinChat(c);if(a==="project")await moveChatToProject(c);if(a==="delete")await deleteChat(c);menu.remove()}; row.appendChild(menu)
+  closeChatMenus();
+  const anchor=row.querySelector(".chat-more");
+  const layer=document.createElement("div"); layer.className="chat-menu-layer";
+  const menu=document.createElement("div"); menu.className="chat-menu";
+  menu.innerHTML=`<button data-a="rename"><span>Rename</span></button><button data-a="pin"><span>${c.pinned?"Unpin":"Pin"}</span></button><button data-a="project"><span>Move to project</span></button><button data-a="delete" class="danger-text"><span>Delete</span></button>`;
+  layer.appendChild(menu); document.body.appendChild(layer);
+  const r=anchor.getBoundingClientRect(), width=Math.min(228,window.innerWidth-24);
+  menu.style.width=width+"px";
+  requestAnimationFrame(()=>{const h=menu.offsetHeight||210;const left=Math.max(12,Math.min(window.innerWidth-width-12,r.right-width));let top=r.bottom+7;if(top+h>window.innerHeight-12)top=Math.max(12,r.top-h-7);menu.style.left=left+"px";menu.style.top=top+"px"});
+  layer.addEventListener("pointerdown",e=>{if(e.target===layer)closeChatMenus()});
+  menu.onclick=async e=>{const b=e.target.closest("[data-a]");if(!b)return;const a=b.dataset.a;closeChatMenus();if(a==="rename")await renameChat(c);if(a==="pin")await pinChat(c);if(a==="project")await moveChatToProject(c);if(a==="delete")await deleteChat(c)};
 }
 async function newChat(focus=true,projectId=null){
   if(state.generating)return toast("Stop the current response first.");
@@ -242,10 +254,27 @@ async function saveAdminSettings(){const body={system_prompt:$("#adminSystemProm
 
 async function logout(){await api("/api/auth/logout",{method:"POST",body:{}});location.reload()}
 async function toggleMyMemory(){const enabled=!state.user.memory_enabled;const r=await api("/api/me/memory",{method:"PATCH",body:{enabled}});if(!r.ok)return toast(r.error,"error");state.user.memory_enabled=enabled;syncAccountLabels();toast(`Memory turned ${enabled?"on":"off"}`)}
-function cycleTheme(){const seq=["system","dark","light"];state.theme=seq[(seq.indexOf(state.theme)+1)%seq.length];localStorage.setItem("chatfocus-theme",state.theme);applyTheme();syncAccountLabels()}
+function setTheme(theme){if(!["system","dark","light"].includes(theme))return;state.theme=theme;localStorage.setItem("chatfocus-theme",state.theme);applyTheme();syncAccountLabels();renderSettingsDetailIfOpen()}
+function cycleTheme(){const seq=["system","dark","light"];setTheme(seq[(seq.indexOf(state.theme)+1)%seq.length])}
 function syncAccountLabels(){const mem=$("#memoryStateLabel"),theme=$("#themeStateLabel");if(mem)mem.textContent=state.user?.memory_enabled?"On":"Off";if(theme)theme.textContent=state.theme.charAt(0).toUpperCase()+state.theme.slice(1)}
 function applyTheme(){let t=state.theme;if(t==="system")t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";document.documentElement.dataset.theme=t}
-function openAccountPanel(){closeSidebar();syncAccountLabels();const q=$("#settingsSearch");if(q){q.value="";filterSettings()}els.accountPanel.classList.remove("hidden")}function closeAccountPanel(){els.accountPanel.classList.add("hidden")}
+function openAccountPanel(){closeSidebar();syncAccountLabels();ensureSettingsDetail();closeSettingsDetail();const q=$("#settingsSearch");if(q){q.value="";filterSettings()}els.accountPanel.classList.remove("hidden")}function closeAccountPanel(){closeSettingsDetail();els.accountPanel.classList.add("hidden")}
+function ensureSettingsDetail(){if($("#settingsDetail"))return;const shell=els.accountPanel.querySelector(".account-panel-shell");const detail=document.createElement("section");detail.id="settingsDetail";detail.className="settings-detail hidden";detail.innerHTML=`<header class="settings-detail-header"><button id="settingsDetailBack" class="settings-detail-back" aria-label="Back">‹</button><strong id="settingsDetailTitle">Settings</strong><span></span></header><div id="settingsDetailBody" class="settings-detail-body"></div>`;shell.appendChild(detail);$("#settingsDetailBack").addEventListener("click",closeSettingsDetail);$("#settingsDetailBody").addEventListener("click",handleSettingsDetailAction)}
+function closeSettingsDetail(){const d=$("#settingsDetail");if(d)d.classList.add("hidden")}
+function openSettingsDetail(kind){ensureSettingsDetail();const d=$("#settingsDetail");d.dataset.kind=kind;renderSettingsDetail(kind);d.classList.remove("hidden")}
+function renderSettingsDetailIfOpen(){const d=$("#settingsDetail");if(d&&!d.classList.contains("hidden"))renderSettingsDetail(d.dataset.kind)}
+function settingsDetailCard(title,body){return `<div class="settings-detail-card"><h3>${title}</h3>${body}</div>`}
+function renderSettingsDetail(kind){const title=$("#settingsDetailTitle"),body=$("#settingsDetailBody");if(!title||!body)return;const supported=!!(window.SpeechRecognition||window.webkitSpeechRecognition);const release="V1.9";const selected=t=>state.theme===t?" selected":"";const on=!!state.user?.memory_enabled;const map={
+profile:["Account",settingsDetailCard("Profile",`<div class="settings-account-hero"><span class="avatar account-avatar-large">${escapeHtml((state.user?.name||"C")[0]?.toUpperCase()||"C")}</span><div><strong>${escapeHtml(state.user?.name||"Account")}</strong><small>${escapeHtml(state.user?.email||"")}</small></div></div><div class="settings-kv"><span>Role</span><b>${escapeHtml(state.user?.role||"user")}</b></div><div class="settings-kv"><span>Account status</span><b>Active</b></div>`)],
+appearance:["Appearance",settingsDetailCard("Choose a theme",`<button class="settings-choice${selected("system")}" data-setting-theme="system"><span>System</span><b>${state.theme==="system"?"✓":""}</b></button><button class="settings-choice${selected("light")}" data-setting-theme="light"><span>Light</span><b>${state.theme==="light"?"✓":""}</b></button><button class="settings-choice${selected("dark")}" data-setting-theme="dark"><span>Dark</span><b>${state.theme==="dark"?"✓":""}</b></button>`)],
+memory:["Memory",settingsDetailCard("Use past conversations",`<p class="settings-detail-text">When Memory is on, ChatFocus can use compact context from earlier conversations to make future replies more relevant.</p><button class="settings-switch-row" data-memory-detail-toggle><span><strong>Memory</strong><small>${on?"Currently on":"Currently off"}</small></span><i class="ui-switch ${on?"on":""}"><u></u></i></button>`)],
+dictation:["Dictation",settingsDetailCard("Microphone dictation",`<p class="settings-detail-text">Turn speech into text directly in the message composer.</p><div class="settings-kv"><span>Browser support</span><b>${supported?"Available":"Unavailable"}</b></div><button class="settings-detail-action" data-settings-action="dictation">${supported?"Use microphone in chat":"Back to chat"}</button>`)],
+language:["App Language",settingsDetailCard("Interface language",`<button class="settings-choice selected"><span>English</span><b>✓</b></button><p class="settings-detail-note">Additional interface languages can be added in a future release.</p>`)],
+conversations:["Saved Conversations",settingsDetailCard("Conversation history",`<div class="settings-kv"><span>Saved chats</span><b>${state.chats.length}</b></div><p class="settings-detail-text">Your conversations stay connected to this account until you delete them.</p><button class="settings-detail-action" data-settings-action="conversations">View conversations</button>`)],
+storage:["File Storage",settingsDetailCard("Private uploads",`<p class="settings-detail-text">Images, PDFs and documents uploaded to ChatFocus are kept in your private file storage and associated with your account.</p><div class="settings-kv"><span>Storage</span><b>Private</b></div><button class="settings-detail-action" data-settings-action="library">Open Library</button>`)],
+model:["ChatFocus Model",settingsDetailCard("CFocus 1.0",`<div class="model-badge">CFocus 1.0</div><div class="settings-kv"><span>ChatFocus release</span><b>${release}</b></div><div class="settings-kv"><span>Intelligence</span><b>${state.intelligence?"On":"Off"}</b></div><div class="settings-kv"><span>Web Search</span><b>${state.web?"On":"Off"}</b></div>`)],
+privacy:["Privacy & Security",settingsDetailCard("Your data",`<div class="privacy-point"><strong>Private uploads</strong><small>Your stored files are not published as public R2 URLs.</small></div><div class="privacy-point"><strong>Server-side AI access</strong><small>Your OpenAI API credential stays on the Cloudflare Worker, not in the browser.</small></div><div class="privacy-point"><strong>Account sessions</strong><small>Sign out any time to end this browser session.</small></div>`)]};const [t,h]=map[kind]||map.profile;title.textContent=t;body.innerHTML=h}
+async function handleSettingsDetailAction(e){const theme=e.target.closest("[data-setting-theme]");if(theme){setTheme(theme.dataset.settingTheme);return}if(e.target.closest("[data-memory-detail-toggle]")){await toggleMyMemory();renderSettingsDetail("memory");return}const a=e.target.closest("[data-settings-action]")?.dataset.settingsAction;if(a==="dictation"){closeAccountPanel();setTimeout(()=>{els.composer.focus();toggleDictation()},80)}if(a==="conversations"){closeAccountPanel();switchView("chat");openSidebar()}if(a==="library"){closeAccountPanel();switchView("library")}}
 function filterSettings(){const input=$("#settingsSearch");if(!input)return;const q=input.value.trim().toLowerCase();$$('[data-settings-search]').forEach(el=>{const hay=(el.dataset.settingsSearch||"").toLowerCase();el.classList.toggle("settings-filtered",!!q&&!hay.includes(q))});$$('[data-settings-section]').forEach(group=>{const visible=[...group.querySelectorAll('[data-settings-search]')].some(el=>!el.classList.contains("settings-filtered"));group.classList.toggle("settings-empty",!visible);const title=group.previousElementSibling;if(title?.classList.contains("settings-section-title"))title.classList.toggle("settings-empty",!visible)});const admin=$("#accountAdminSection");if(admin&&!admin.classList.contains("hidden")){const group=admin.querySelector('[data-settings-section]');const visible=group&&![...group.querySelectorAll('[data-settings-search]')].every(el=>el.classList.contains("settings-filtered"));admin.classList.toggle("settings-search-empty",!visible)}}
 function openSidebar(){els.sidebar.classList.add("open");els.sidebarBackdrop.classList.add("show")}function closeSidebar(){els.sidebar.classList.remove("open");els.sidebarBackdrop.classList.remove("show")}
 
