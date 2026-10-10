@@ -207,7 +207,8 @@
             <div id="statsGrid" class="stats-grid admin-stats-grid"></div>
             <div class="admin-overview-grid">
               <article class="admin-card overview-card"><span class="overview-kicker">Service</span><strong id="adminServiceStatus">Online</strong><small>AI generation availability for customers.</small></article>
-              <article class="admin-card overview-card"><span class="overview-kicker">Daily allowance</span><strong id="adminDefaultLimitSummary">100 requests</strong><small>Default limit for customers without an override.</small></article>
+              <article class="admin-card overview-card"><span class="overview-kicker">Daily allowance</span><strong id="adminDefaultLimitSummary">100 requests</strong><small>Default AI limit for customers without an override.</small></article>
+              <article class="admin-card overview-card"><span class="overview-kicker">Image allowance</span><strong id="adminImageLimitSummary">20 images</strong><small>Default daily image uploads per customer.</small></article>
               <article class="admin-card overview-card"><span class="overview-kicker">Runtime</span><strong id="adminRuntimeSummary">CFocus 1.0</strong><small id="adminReleaseSummary">ChatFocus</small></article>
             </div>
             <div class="admin-notice">
@@ -221,7 +222,7 @@
                 <div><h2>Customers</h2><p>Manage access, daily allowance and account privileges.</p></div>
                 <div class="customers-head-actions"><span id="adminCustomerCount" class="customer-count"></span><input id="adminUserSearch" class="compact-input" placeholder="Search customers" /></div>
               </div>
-              <div class="table-wrap admin-customers-table"><table><thead><tr><th>Customer</th><th>Today</th><th>Daily limit</th><th>Unlimited</th><th>Status</th><th>Role</th><th>Usage</th><th>Actions</th></tr></thead><tbody id="usersTable"></tbody></table></div>
+              <div class="table-wrap admin-customers-table"><table><thead><tr><th>Customer</th><th>AI today</th><th>AI limit</th><th>Unlimited AI</th><th>Images today</th><th>Image limit</th><th>Status</th><th>Role</th><th>Usage</th><th>Actions</th></tr></thead><tbody id="usersTable"></tbody></table></div>
             </div>
           </section>
 
@@ -232,6 +233,9 @@
                 <div class="settings-form">
                   <div class="setting-row admin-feature-row"><div><strong>ChatFocus service</strong><small>Turn AI generation on or off for customers. Admin access remains available.</small></div><input id="adminServiceEnabled" type="checkbox" /></div>
                   <label><span>Default daily AI requests</span><input id="adminDailyLimit" type="number" min="0" max="100000" /><small class="field-help">Use 0 for unlimited. Individual customer overrides take priority.</small></label>
+                  <div class="setting-row admin-feature-row"><div><strong>Image uploads</strong><small>Allow customers to upload screenshots and photos. Admin accounts remain available for testing.</small></div><input id="adminImageUploadsEnabled" type="checkbox" /></div>
+                  <label><span>Default daily image uploads</span><input id="adminDailyImageLimit" type="number" min="0" max="100000" /><small class="field-help">Use 0 for unlimited. Customer-specific image limits override this value.</small></label>
+                  <label><span>Maximum image size</span><input id="adminMaxImageMb" type="number" min="1" max="100" /><small class="field-help">Maximum size in MB for each uploaded image.</small></label>
                   <div class="setting-row"><div><strong>New signups</strong><small>Allow new customer accounts</small></div><input id="adminSignups" type="checkbox" /></div>
                   <div class="setting-row"><div><strong>Cross-chat memory</strong><small>Allow saved conversation summaries to be reused</small></div><input id="adminMemory" type="checkbox" /></div>
                   <div class="setting-row"><div><strong>Web search</strong><small>Expose live web search to customers</small></div><input id="adminWeb" type="checkbox" /></div>
