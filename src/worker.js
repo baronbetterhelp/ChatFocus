@@ -310,7 +310,7 @@ async function createMessageAndStream(request, env, ctx, user, chatId) {
     const title = makeLocalTitle(text, attachmentIds.length);
     await env.DB.prepare("UPDATE chats SET title=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(title,chatId).run();
   } else await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
-  return streamAssistant(env, ctx, user, chatId, msgId, !!body.web_search);
+  return streamAssistant(env, ctx, user, chatId, msgId, !!body.web_search, !!body.intelligence);
 }
 
 async function editUserMessage(request, env, user, messageId) {
@@ -340,10 +340,10 @@ async function regenerateAndStream(request, env, ctx, user, chatId) {
   if (!userMsg) return json({ error: "No user message to regenerate from." }, 400);
   await env.DB.prepare("DELETE FROM messages WHERE chat_id=? AND rowid > ?").bind(chatId,userMsg.seq).run();
   await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
-  return streamAssistant(env, ctx, user, chatId, userMsg.id, !!body.web_search);
+  return streamAssistant(env, ctx, user, chatId, userMsg.id, !!body.web_search, !!body.intelligence);
 }
 
-async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requestedWeb) {
+async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requestedWeb, requestedIntelligence) {
   if (!env.OPENAI_API_KEY) return json({ error: "OPENAI_API_KEY is not configured on the server." }, 503);
   const assistantId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
@@ -354,7 +354,7 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
       model: env.OPENAI_MODEL || "gpt-6-luna",
       instructions,
       input,
-      reasoning: { effort: "medium" },
+      reasoning: { effort: requestedIntelligence ? "high" : "medium" },
       max_output_tokens: 12000,
       stream: true,
       store: false
