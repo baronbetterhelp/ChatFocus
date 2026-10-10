@@ -1,12 +1,8 @@
-ChatFocus V1.11 Patch — Clean Action Menu & Response Time
+ChatFocus V1.12 Patch — Smooth Streaming & Tight Action Layout
 
-For an existing V1.10 site, replace/add:
+For V1.11, replace only:
 - public/app.js
 - public/styles.css
 - src/worker.js
-- migrations/0003_response_time.sql
 
-Then deploy normally with:
-npm run db:remote && npx wrangler deploy
-
-The new migration adds response_time_ms to messages so response time persists after refresh.
+No migration or wrangler.toml change is required.
