@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.17";
+const CHATFOCUS_RELEASE = "V1.18";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -14,7 +14,18 @@ export default {
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
-      if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
+      if (!url.pathname.startsWith("/api/")) {
+        const asset = await env.ASSETS.fetch(request);
+        const headers = new Headers(asset.headers);
+        if (url.pathname === "/" || url.pathname.endsWith(".html")) {
+          headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+          headers.set("Pragma", "no-cache");
+          headers.set("Expires", "0");
+        } else if (url.pathname.endsWith(".js") || url.pathname.endsWith(".css")) {
+          headers.set("Cache-Control", "public, max-age=300, must-revalidate");
+        }
+        return new Response(asset.body, { status: asset.status, statusText: asset.statusText, headers });
+      }
       return await routeApi(request, env, ctx, url);
     } catch (err) {
       console.error(err);
