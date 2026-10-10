@@ -1,15 +1,10 @@
-ChatFocus V1.6 — Smart Workspace patch for V1.5
+ChatFocus V1.7 — Instant Controls & Runtime Awareness
 
-Replace/add these files in GitHub:
-- public/index.html
-- public/styles.css
+Replace these files in your current V1.6 repository:
 - public/app.js
+- public/styles.css
 - src/worker.js
-- migrations/0002_workspace.sql
-- wrangler.toml
 
-Keep your Cloudflare OPENAI_API_KEY secret unchanged.
-Your deploy command remains:
-  npm run db:remote && npx wrangler deploy
+No D1 migration, R2 change, API key change, or wrangler.toml change is required.
 
-The deployment will automatically apply migration 0002 before publishing the Worker.
+Then commit to main and redeploy Cloudflare.
