@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.11";
+const CHATFOCUS_RELEASE = "V1.12";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
