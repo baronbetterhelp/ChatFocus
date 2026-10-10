@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#0a0b0f" />
+  <meta name="theme-color" content="#0b0c10" />
   <meta name="description" content="ChatFocus — premium multimodal AI chat for images, files, PDFs and everyday work." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="manifest" href="/manifest.webmanifest" />
@@ -17,7 +17,7 @@
     <div class="auth-orb orb-a"></div><div class="auth-orb orb-b"></div>
     <div class="auth-brand">
       <div class="brand-mark xl"><i></i><b></b><span></span></div>
-      <div><h1>ChatFocus</h1><p>See more. Understand more. Do more.</p></div>
+      <div><h1>ChatFocus</h1><p>One place for conversations, images and files.</p></div>
     </div>
     <div class="auth-card glass">
       <div class="eyebrow">PREMIUM AI WORKSPACE</div>
@@ -26,7 +26,7 @@
       <form id="authForm">
         <label id="nameField" class="field hidden"><span>Name</span><input id="authName" autocomplete="name" placeholder="Your name" /></label>
         <label class="field"><span>Email</span><input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com" required /></label>
-        <label class="field"><span>Password</span><div class="password-wrap"><input id="authPassword" type="password" autocomplete="current-password" placeholder="Minimum 8 characters" required /><button type="button" id="togglePassword" class="icon-btn small" aria-label="Show password">◉</button></div></label>
+        <label class="field"><span>Password</span><div class="password-wrap"><input id="authPassword" type="password" autocomplete="current-password" placeholder="Minimum 8 characters" required /><button type="button" id="togglePassword" class="icon-btn small" aria-label="Show password">Show</button></div></label>
         <button id="authSubmit" class="primary-btn auth-submit" type="submit"><span>Sign in</span><i>→</i></button>
       </form>
       <button id="authSwitch" class="text-btn">New to ChatFocus? Create an account</button>
@@ -36,17 +36,19 @@
 
   <div id="appView" class="app-view hidden">
     <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
-    <aside id="sidebar" class="sidebar">
+
+    <aside id="sidebar" class="sidebar" aria-label="Chat navigation">
       <div class="sidebar-top">
         <button id="brandHome" class="brand-button" aria-label="ChatFocus home">
           <span class="brand-mark"><i></i><b></b><span></span></span><strong>ChatFocus</strong>
         </button>
         <button id="closeSidebar" class="icon-btn mobile-only" aria-label="Close sidebar">×</button>
       </div>
+
       <button id="newChatBtn" class="new-chat-btn"><span class="plus">＋</span><span>New chat</span><kbd>⌘K</kbd></button>
       <div class="sidebar-search"><span>⌕</span><input id="chatSearch" placeholder="Search conversations" /></div>
       <nav id="primaryNav" class="primary-nav">
-        <button data-view="chat" class="nav-item active"><span>◫</span> Chats</button>
+        <button data-view="chat" class="nav-item active"><span>□</span> Chats</button>
         <button id="adminNav" data-view="admin" class="nav-item hidden"><span>◇</span> Admin</button>
       </nav>
       <div class="sidebar-label"><span>Conversations</span><button id="refreshChats" class="mini-action" title="Refresh">↻</button></div>
@@ -55,13 +57,8 @@
         <button id="accountBtn" class="account-btn">
           <span id="avatar" class="avatar">C</span>
           <span class="account-copy"><strong id="accountName">Account</strong><small id="accountEmail">email</small></span>
-          <span>•••</span>
+          <span class="chevron">›</span>
         </button>
-        <div id="accountMenu" class="account-menu hidden">
-          <button id="memoryToggleMenu">Memory: on</button>
-          <button id="themeToggle">Theme: system</button>
-          <button id="logoutBtn" class="danger-text">Sign out</button>
-        </div>
       </div>
     </aside>
 
@@ -69,7 +66,7 @@
       <header class="topbar">
         <div class="topbar-left">
           <button id="openSidebar" class="icon-btn mobile-only" aria-label="Open sidebar">☰</button>
-          <div class="chat-heading"><strong id="currentChatTitle">ChatFocus</strong><span id="modelLabel">GPT-6 Luna</span></div>
+          <div class="chat-heading"><strong id="currentChatTitle">New chat</strong><span id="modelLabel">GPT-6 Luna</span></div>
         </div>
         <div class="topbar-actions">
           <button id="renameChatBtn" class="icon-btn desktop-soft" title="Rename chat">✎</button>
@@ -80,17 +77,6 @@
 
       <section id="chatView" class="view chat-view">
         <div id="messagesScroller" class="messages-scroller">
-          <div id="welcomeState" class="welcome-state">
-            <div class="hero-mark brand-mark xl"><i></i><b></b><span></span></div>
-            <h1>What can I help you focus on?</h1>
-            <p>Upload a screenshot, image, PDF or document. Ask ChatFocus to understand it, reply to it, summarize it, compare it or turn it into something useful.</p>
-            <div class="suggestion-grid">
-              <button class="suggestion" data-prompt="Help me reply naturally to the conversation in this screenshot. Read the context carefully and give me the best reply to send."><span>▧</span><strong>Reply to a screenshot</strong><small>Upload a chat and get a natural response</small></button>
-              <button class="suggestion" data-prompt="Analyze this image carefully. Tell me the important details, what they mean, and anything I may have missed."><span>◉</span><strong>Analyze an image</strong><small>Understand visual details and context</small></button>
-              <button class="suggestion" data-prompt="Summarize this document clearly, then give me the key points, action items, and anything I should pay close attention to."><span>▤</span><strong>Work with a PDF</strong><small>Summarize, explain and extract details</small></button>
-              <button class="suggestion" data-prompt="Help me think through this carefully. Ask no unnecessary questions; use the context I already gave you and give me a practical answer."><span>✦</span><strong>Think it through</strong><small>Reason from the context in your chats</small></button>
-            </div>
-          </div>
           <div id="messageList" class="message-list"></div>
         </div>
 
@@ -98,16 +84,16 @@
           <div id="dropHint" class="drop-hint hidden">Drop files here to add them</div>
           <div id="attachmentTray" class="attachment-tray"></div>
           <div class="composer-shell">
-            <textarea id="composer" rows="1" placeholder="Message ChatFocus" spellcheck="true"></textarea>
+            <textarea id="composer" rows="1" placeholder="Message ChatFocus" spellcheck="true" aria-label="Message ChatFocus"></textarea>
             <div class="composer-bottom">
               <div class="composer-tools">
-                <label class="tool-btn attach-btn" title="Add images or files"><input id="fileInput" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.doc,.docx,.rtf,.odt,.xls,.xlsx,.csv,.tsv,.ppt,.pptx,.txt,.md,.json,.html,.css,.js,.ts,.py,.sql" /><span>＋</span><span class="tool-label">Add</span></label>
+                <label class="tool-btn attach-btn" title="Add images or files"><input id="fileInput" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.doc,.docx,.rtf,.odt,.xls,.xlsx,.csv,.tsv,.ppt,.pptx,.txt,.md,.json,.html,.css,.js,.ts,.py,.sql" /><span class="plus-icon">＋</span><span class="tool-label">Attach</span></label>
                 <button id="webToggle" class="tool-btn hidden" type="button" title="Use web search for this message"><span>◎</span><span class="tool-label">Web</span></button>
               </div>
               <div class="composer-actions">
-                <button id="micBtn" class="round-btn" title="Dictate">⌁</button>
-                <button id="sendBtn" class="send-btn" title="Send"><span>↑</span></button>
-                <button id="stopBtn" class="send-btn stop hidden" title="Stop"><span>■</span></button>
+                <button id="micBtn" class="round-btn" title="Dictate" aria-label="Dictate">⌁</button>
+                <button id="sendBtn" class="send-btn" title="Send" aria-label="Send"><span>↑</span></button>
+                <button id="stopBtn" class="send-btn stop hidden" title="Stop" aria-label="Stop"><span>■</span></button>
               </div>
             </div>
           </div>
@@ -117,7 +103,7 @@
 
       <section id="adminView" class="view admin-view hidden">
         <div class="admin-wrap">
-          <div class="admin-header"><div><div class="eyebrow">OWNER CONTROL</div><h1>Admin Console</h1><p>Users, usage, safety controls and ChatFocus behavior in one place.</p></div><button id="adminRefresh" class="secondary-btn">Refresh</button></div>
+          <div class="admin-header"><div><div class="eyebrow">OWNER CONTROL</div><h1>Admin Console</h1><p>Users, usage and ChatFocus behavior in one place.</p></div><button id="adminRefresh" class="secondary-btn">Refresh</button></div>
           <div id="statsGrid" class="stats-grid"></div>
           <div class="admin-grid">
             <div class="admin-card users-card">
@@ -141,6 +127,35 @@
         </div>
       </section>
     </main>
+
+    <section id="accountPanel" class="account-panel hidden" aria-label="Account settings">
+      <header class="account-panel-header">
+        <button id="closeAccountPanel" class="account-back" aria-label="Close settings">←</button>
+        <strong>Settings</strong>
+        <span></span>
+      </header>
+      <div class="account-panel-body">
+        <div class="account-profile">
+          <span id="accountAvatarLarge" class="avatar account-avatar-large">C</span>
+          <div><h2 id="accountNameLarge">Account</h2><p id="accountEmailLarge">email</p></div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Personalization</div>
+          <button id="memoryToggleMenu" class="settings-item"><span><strong>Memory</strong><small>Use past conversations as helpful context</small></span><b id="memoryStateLabel">On</b></button>
+          <button id="themeToggle" class="settings-item"><span><strong>Appearance</strong><small>Switch between system, dark and light</small></span><b id="themeStateLabel">System</b></button>
+        </div>
+
+        <div id="accountAdminSection" class="settings-section hidden">
+          <div class="settings-section-title">Owner</div>
+          <button id="accountAdminBtn" class="settings-item"><span><strong>Admin Console</strong><small>Manage users and product settings</small></span><b>Open</b></button>
+        </div>
+
+        <div class="settings-section account-danger-section">
+          <button id="logoutBtn" class="settings-item danger-setting"><span><strong>Sign out</strong><small>Sign out of this device</small></span><b>›</b></button>
+        </div>
+      </div>
+    </section>
   </div>
 
   <div id="confirmModal" class="modal-backdrop hidden">
