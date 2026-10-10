@@ -1,7 +1,17 @@
-ChatFocus V1.16 Patch — Reliable Multi-Image Uploads
+ChatFocus V1.17 — Low-Cost Vision Pipeline
 
-For an existing V1.15 site, replace only:
+Upgrade from V1.16 by replacing/adding:
+- public/index.html
 - public/app.js
 - src/worker.js
+- migrations/0006_low_cost_vision.sql
 
-No migration or wrangler.toml change is required.
+Deploy command:
+npm run db:remote && npx wrangler deploy
+
+Main savings:
+- 1600px max-edge sequential image optimization before upload
+- 4-image mobile / 6-image desktop upload batching
+- low image detail by default
+- only current-turn attachments sent to OpenAI, preventing repeat billing of old screenshots
+- normal reasoning uses low; Intelligence remains high
