@@ -129,9 +129,12 @@
                   <input id="photoInput" class="hidden-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple />
                   <input id="fileInput" class="hidden-file-input" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.doc,.docx,.rtf,.odt,.xls,.xlsx,.csv,.tsv,.ppt,.pptx,.txt,.md,.json,.html,.css,.js,.ts,.py,.sql" />
                 </div>
-                <button id="webToggle" class="tool-btn hidden" type="button" title="Use web search for this message"><span>◎</span><span class="tool-label">Web</span></button>
               </div>
               <div class="composer-actions">
+                <button id="webToggle" class="web-search-btn hidden" type="button" title="Use live web search" aria-label="Turn on web search" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/><path d="M7.7 9.2h6.6M7.7 12.8h4.1"/></svg>
+                  <span>Web</span>
+                </button>
                 <button id="intelligenceActiveBtn" class="intelligence-active-btn hidden" type="button" title="Intelligence is on. Tap to turn it off." aria-label="Intelligence on">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 12 16.5 8.5M7 16h10"/></svg>
                   <span>Intelligence</span>

@@ -2,7 +2,7 @@ const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const state = {
   user:null, settings:null, chats:[], currentChat:null, messages:[], pending:[], generating:false,
-  controller:null, authMode:"login", view:"chat", web:false, intelligence:localStorage.getItem("chatfocus-intelligence")==="true", theme:localStorage.getItem("chatfocus-theme")||"system",
+  controller:null, authMode:"login", view:"chat", web:localStorage.getItem("chatfocus-web")==="true", intelligence:localStorage.getItem("chatfocus-intelligence")==="true", theme:localStorage.getItem("chatfocus-theme")||"system",
   recognition:null, dictating:false, chatCache:new Map(), projects:[], library:[], schedules:[], activeProject:null, streamRenderQueued:false, chatCreatePromise:null
 };
 
@@ -36,10 +36,10 @@ function bindEvents(){
   els.photoInput.addEventListener("change",e=>handleFiles([...e.target.files]));
   els.attachMenuBtn.addEventListener("click",e=>{e.stopPropagation();toggleAttachMenu()});
   els.attachMenu.addEventListener("click",handleAttachMenuAction);
-  syncIntelligenceUI();
+  syncIntelligenceUI(); syncWebUI();
   $("#micBtn").addEventListener("click",toggleDictation);
   $("#intelligenceActiveBtn").addEventListener("click",()=>setIntelligence(false));
-  els.webToggle.addEventListener("click",()=>{state.web=!state.web;els.webToggle.classList.toggle("active",state.web)});
+  els.webToggle.addEventListener("click",()=>setWebSearch(!state.web));
   $("#renameChatBtn").addEventListener("click",renameCurrentChat); $("#pinChatBtn").addEventListener("click",pinCurrentChat); $("#deleteChatBtn").addEventListener("click",deleteCurrentChat);
   $("#accountBtn").addEventListener("click",openAccountPanel);
   $("#closeAccountPanel").addEventListener("click",closeAccountPanel);
@@ -49,7 +49,7 @@ function bindEvents(){
   $("#languageSettings").addEventListener("click",()=>toast("ChatFocus currently uses English for the interface."));
   $("#savedChatsInfo").addEventListener("click",()=>toast("Your conversations are saved automatically to your account."));
   $("#storageInfo").addEventListener("click",()=>toast("Uploaded images, PDFs and documents are stored privately."));
-  $("#modelInfo").addEventListener("click",()=>toast("CFocus 1.0 is the public ChatFocus model identity."));
+  $("#modelInfo").addEventListener("click",()=>toast("You are using ChatFocus V1.8 with CFocus 1.0."));
   $("#privacyInfo").addEventListener("click",()=>toast("Your account data and uploaded files are not exposed publicly."));
   els.accountPanel.addEventListener("click",e=>{if(e.target===els.accountPanel)closeAccountPanel()});
   $("#accountAdminBtn").addEventListener("click",()=>{closeAccountPanel();switchView("admin")});
@@ -78,7 +78,7 @@ function bindEvents(){
 function showAuth(){els.appView.classList.add("hidden");els.authView.classList.remove("hidden")}
 function toggleAuthMode(){state.authMode=state.authMode==="login"?"signup":"login";const sign=state.authMode==="signup";els.nameField.classList.toggle("hidden",!sign);els.authName.required=sign;els.authPassword.autocomplete=sign?"new-password":"current-password";els.authTitle.textContent=sign?"Create your account":"Welcome back";els.authSubtitle.textContent=sign?"Your chats, images and files stay connected to your workspace.":"Continue your conversations, files and visual work.";els.authSubmit.querySelector("span").textContent=sign?"Create account":"Sign in";els.authSwitch.textContent=sign?"Already have an account? Sign in":"New to ChatFocus? Create an account"}
 async function onAuthSubmit(e){e.preventDefault();const body={email:els.authEmail.value,password:els.authPassword.value,...(state.authMode==="signup"?{name:els.authName.value}:{})};setButtonBusy(els.authSubmit,true);const r=await api(`/api/auth/${state.authMode}`,{method:"POST",body});setButtonBusy(els.authSubmit,false);if(!r.ok)return toast(r.error||"Unable to continue","error");state.user=r.user;const me=await api("/api/me");state.settings=me.settings;await enterApp()}
-async function enterApp(){els.authView.classList.add("hidden");els.appView.classList.remove("hidden");const initial=(state.user.name||"C").trim()[0].toUpperCase();$("#accountName").textContent=state.user.name;$("#accountEmail").textContent=state.user.email;$("#avatar").textContent=initial;$("#accountNameLarge").textContent=state.user.name;$("#accountEmailLarge").textContent=state.user.email;$("#accountAvatarLarge").textContent=initial;syncAccountLabels();if(state.user.role==="admin"){els.adminNav.classList.remove("hidden");$("#accountAdminSection").classList.remove("hidden")}if(state.settings?.web_search_enabled)els.webToggle.classList.remove("hidden");await loadChats();if(state.chats.length)await openChat(state.chats[0].id);else await newChat(false)}
+async function enterApp(){els.authView.classList.add("hidden");els.appView.classList.remove("hidden");const initial=(state.user.name||"C").trim()[0].toUpperCase();$("#accountName").textContent=state.user.name;$("#accountEmail").textContent=state.user.email;$("#avatar").textContent=initial;$("#accountNameLarge").textContent=state.user.name;$("#accountEmailLarge").textContent=state.user.email;$("#accountAvatarLarge").textContent=initial;syncAccountLabels();if(state.user.role==="admin"){els.adminNav.classList.remove("hidden");$("#accountAdminSection").classList.remove("hidden")}if(state.settings?.web_search_enabled){els.webToggle.classList.remove("hidden");syncWebUI()}else{setWebSearch(false,{silent:true,persist:false});els.webToggle.classList.add("hidden")}await loadChats();if(state.chats.length)await openChat(state.chats[0].id);else await newChat(false)}
 
 async function api(url,{method="GET",body,headers}={}){try{const opts={method,headers:{...(body instanceof FormData?{}:{"content-type":"application/json"}),...(headers||{})}};if(body!==undefined)opts.body=body instanceof FormData?body:JSON.stringify(body);const r=await fetch(url,opts);const ct=r.headers.get("content-type")||"";const data=ct.includes("application/json")?await r.json():{text:await r.text()};return {ok:r.ok,status:r.status,...data}}catch(e){return{ok:false,error:e.message||"Network error"}}}
 
@@ -253,6 +253,8 @@ function toggleAttachMenu(force){const shouldOpen=force===undefined?els.attachMe
 function closeAttachMenu(){els.attachMenu.classList.add("hidden");els.attachMenuBtn.setAttribute("aria-expanded","false")}
 function handleAttachMenuAction(e){const btn=e.target.closest("[data-attach-action]");if(!btn)return;const action=btn.dataset.attachAction;if(action==="camera"){closeAttachMenu();els.cameraInput.click();return}if(action==="photos"){closeAttachMenu();els.photoInput.click();return}if(action==="files"){closeAttachMenu();els.fileInput.click();return}if(action==="intelligence"){setIntelligence(!state.intelligence);closeAttachMenu();toast(`Intelligence ${state.intelligence?"on":"off"}`)}}
 function setIntelligence(on){state.intelligence=!!on;localStorage.setItem("chatfocus-intelligence",String(state.intelligence));syncIntelligenceUI();document.documentElement.dataset.intelligence=state.intelligence?"on":"off"}
+function setWebSearch(on,{silent=false,persist=true}={}){state.web=!!on;if(persist)localStorage.setItem("chatfocus-web",String(state.web));syncWebUI();if(!silent)toast(`Web search ${state.web?"on":"off"}`)}
+function syncWebUI(){const btn=els.webToggle;if(!btn)return;document.documentElement.dataset.web=state.web?"on":"off";btn.classList.toggle("active",state.web);btn.setAttribute("aria-pressed",String(state.web));btn.setAttribute("aria-label",state.web?"Web search on. Tap to turn it off.":"Turn on web search");btn.title=state.web?"Web search is on":"Use live web search";const label=btn.querySelector("span:last-child");if(label)label.textContent="Web"}
 function syncIntelligenceUI(){const btn=$("#intelligenceToggle"),label=$("#intelligenceState"),active=$("#intelligenceActiveBtn");document.documentElement.dataset.intelligence=state.intelligence?"on":"off";if(!btn||!label)return;btn.classList.toggle("active",state.intelligence);btn.setAttribute("aria-checked",String(state.intelligence));label.textContent=state.intelligence?"On":"Off";els.attachMenuBtn.classList.toggle("intelligence-on",state.intelligence);if(active){active.classList.toggle("hidden",!state.intelligence);active.setAttribute("aria-pressed",String(state.intelligence))}}
 
 function setDictationUI(on){state.dictating=!!on;const btn=$("#micBtn");if(!btn)return;btn.classList.toggle("listening",state.dictating);btn.setAttribute("aria-pressed",String(state.dictating));btn.setAttribute("aria-label",state.dictating?"Stop dictation":"Start dictation");btn.title=state.dictating?"Stop dictation":"Dictate"}
