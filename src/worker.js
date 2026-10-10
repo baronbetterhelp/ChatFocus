@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.18";
+const CHATFOCUS_RELEASE = "V1.19";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -81,7 +81,7 @@ async function routeApi(request, env, ctx, url) {
   if (match && m === "POST") {
     const chat = await getOwnedChat(env, user.id, match[1]);
     if (!chat) return json({ error: "Chat not found" }, 404);
-    await updateChatMetadata(env, user, match[1]);
+    await updateChatMetadata(env, user, match[1], true);
     return json({ chat: await getOwnedChat(env, user.id, match[1]) });
   }
 
@@ -109,6 +109,7 @@ async function routeApi(request, env, ctx, url) {
   if (match && m === "PATCH") return editUserMessage(request, env, user, match[1]);
 
   if (p === "/api/admin/stats" && m === "GET") return adminStats(env, user);
+  if (p === "/api/admin/ai-usage" && m === "GET") return adminAiUsage(env, user, url);
   if (p === "/api/admin/users" && m === "GET") return adminUsers(env, user, url);
   if (p.startsWith("/api/admin/users/") && m === "PATCH") return adminPatchUser(request, env, user, p.split("/").pop());
   if (p === "/api/admin/settings" && m === "GET") return adminGetSettings(env, user);
@@ -167,7 +168,7 @@ async function getClientSettings(env) {
 async function getDailyUsageState(env, user) {
   const [settings, countRow] = await Promise.all([
     env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('service_enabled','daily_request_limit')").all(),
-    env.DB.prepare("SELECT COUNT(*) AS c FROM usage_events WHERE user_id=? AND created_at>=date('now')").bind(user.id).first()
+    env.DB.prepare("SELECT COUNT(*) AS c FROM usage_events WHERE user_id=? AND created_at>=date('now') AND request_kind IN ('chat','scheduled')").bind(user.id).first()
   ]);
   const map = Object.fromEntries((settings.results || []).map(r => [r.key, r.value]));
   const globalLimit = Math.max(0, Number(map.daily_request_limit || 100));
@@ -505,13 +506,44 @@ async function regenerateAndStream(request, env, ctx, user, chatId) {
   return streamAssistant(env, ctx, user, chatId, userMsg.id, !!body.web_search, !!body.intelligence);
 }
 
+function readUsageNumbers(usage) {
+  const input = Number(usage?.input_tokens || 0);
+  const output = Number(usage?.output_tokens || 0);
+  const cached = Math.min(input, Math.max(0, Number(usage?.input_tokens_details?.cached_tokens || usage?.input_tokens_details?.cached_input_tokens || 0)));
+  return { input, output, cached, total: Number(usage?.total_tokens || input + output) };
+}
+
+function estimateLunaStandardCost(usage, webSearchCalls = 0) {
+  const { input, output, cached } = readUsageNumbers(usage);
+  const longContext = input > 272000;
+  const inputRate = longContext ? 0.20 : 0.10;
+  const cachedRate = longContext ? 0.02 : 0.01;
+  const outputRate = longContext ? 0.75 : 0.50;
+  const tokenCost = (((Math.max(0, input - cached)) * inputRate) + (cached * cachedRate) + (output * outputRate)) / 1000000;
+  return tokenCost + (Math.max(0, Number(webSearchCalls || 0)) * 0.01);
+}
+
+function countWebSearchCalls(response) {
+  return (response?.output || []).filter(x => x?.type === "web_search_call").length;
+}
+
+async function logUsageEvent(env, { userId, chatId = null, usage, imageCount = 0, requestKind = "chat", webSearchCalls = 0, responseId = null }) {
+  if (!usage || !userId) return;
+  const n = readUsageNumbers(usage);
+  const cost = estimateLunaStandardCost(usage, webSearchCalls);
+  await env.DB.prepare(`INSERT INTO usage_events(id,user_id,chat_id,model,input_tokens,cached_input_tokens,output_tokens,total_tokens,estimated_cost_usd,image_count,request_kind,web_search_calls,response_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(crypto.randomUUID(), userId, chatId, env.OPENAI_MODEL || "gpt-6-luna", n.input, n.cached, n.output, n.total, cost, Math.max(0, Number(imageCount || 0)), requestKind, Math.max(0, Number(webSearchCalls || 0)), responseId)
+    .run();
+}
+
 async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requestedWeb, requestedIntelligence) {
   if (!env.OPENAI_API_KEY) return json({ error: "OPENAI_API_KEY is not configured on the server." }, 503);
   const responseStartedAt = Date.now();
   const assistantId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
   try {
-    const { input, instructions } = await buildOpenAIContext(env, user, chatId, { intelligence: requestedIntelligence, web: requestedWeb });
+    const { input, instructions, imageCount } = await buildOpenAIContext(env, user, chatId, { intelligence: requestedIntelligence, web: requestedWeb });
     const webAllowed = (await getSetting(env,"web_search_enabled","false")) === "true";
     const payload = {
       model: env.OPENAI_MODEL || "gpt-6-luna",
@@ -536,7 +568,7 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
     }
 
     const encoder = new TextEncoder();
-    let finalText = ""; let usage = null; let responseId = null;
+    let finalText = ""; let usage = null; let responseId = null; let webSearchCalls = 0;
     const bodyStream = new ReadableStream({
       async start(controller) {
         const reader = upstream.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
@@ -555,7 +587,7 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
               if (type === "response.output_text.delta" && typeof evt.delta === "string") {
                 finalText += evt.delta; send({ type: "delta", delta: evt.delta });
               } else if (type === "response.completed") {
-                responseId = evt.response?.id || null; usage = evt.response?.usage || null;
+                responseId = evt.response?.id || null; usage = evt.response?.usage || null; webSearchCalls = countWebSearchCalls(evt.response);
               } else if (type === "response.failed" || type === "error") {
                 send({ type: "error", error: evt.error?.message || evt.response?.error?.message || "Generation failed." });
               }
@@ -566,8 +598,7 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
           await env.DB.prepare("UPDATE messages SET content=?,status='complete',response_time_ms=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(finalText,responseTimeMs,assistantId).run();
           await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
           if (usage) {
-            await env.DB.prepare("INSERT INTO usage_events(id,user_id,chat_id,model,input_tokens,output_tokens,total_tokens) VALUES(?,?,?,?,?,?,?)")
-              .bind(crypto.randomUUID(),user.id,chatId,env.OPENAI_MODEL || "gpt-6-luna",Number(usage.input_tokens||0),Number(usage.output_tokens||0),Number(usage.total_tokens||0)).run();
+            await logUsageEvent(env,{ userId:user.id, chatId, usage, imageCount, requestKind:"chat", webSearchCalls, responseId });
           }
           send({ type: "done", message_id: assistantId, response_id: responseId, usage, response_time_ms: responseTimeMs });
           ctx.waitUntil(updateChatMetadata(env,user,chatId).catch(console.error));
@@ -625,6 +656,7 @@ async function buildOpenAIContext(env, user, chatId, runtime = {}) {
   const latestUserMessage = [...messages].reverse().find(m => m.role === "user");
   const currentAttachmentMessageId = latestUserWithAttachments?.id === latestUserMessage?.id ? latestUserMessage.id : null;
   const input = [];
+  let imageCount = 0;
   for (const m of messages) {
     if (m.role === "assistant") { input.push({ role:"assistant", content:m.content || "" }); continue; }
     if (m.role !== "user") continue;
@@ -635,14 +667,14 @@ async function buildOpenAIContext(env, user, chatId, runtime = {}) {
       for (const a of attMap[m.id] || []) {
         const obj = await env.FILES.get(a.r2_key); if (!obj) continue;
         const bytes = new Uint8Array(await obj.arrayBuffer()); const data = `data:${a.mime_type};base64,${bytesToB64(bytes)}`;
-        if (IMAGE_MIMES.has(a.mime_type)) content.push({ type:"input_image", image_url:data, detail:imageDetail });
+        if (IMAGE_MIMES.has(a.mime_type)) { content.push({ type:"input_image", image_url:data, detail:imageDetail }); imageCount++; }
         else content.push({ type:"input_file", filename:a.filename, file_data:data, ...(a.mime_type === "application/pdf" ? { detail:imageDetail } : {}) });
       }
     }
     content.push({ type:"input_text", text:m.content || (content.length ? "Please analyze the attached file(s)." : "") });
     input.push({ role:"user", content });
   }
-  return { input, instructions };
+  return { input, instructions, imageCount };
 }
 
 function extractOutputText(payload) {
@@ -652,16 +684,25 @@ function extractOutputText(payload) {
   return parts.join("\n").trim();
 }
 
-async function updateChatMetadata(env, user, chatId) {
+async function updateChatMetadata(env, user, chatId, force = false) {
   if (!env.OPENAI_API_KEY) return;
+  const chatState = await env.DB.prepare(`SELECT c.title,c.auto_title,
+    (SELECT COUNT(*) FROM messages m WHERE m.chat_id=c.id AND m.status='complete') AS message_count
+    FROM chats c WHERE c.id=? AND c.user_id=?`).bind(chatId,user.id).first();
+  if (!chatState) return;
+  const count = Number(chatState.message_count || 0);
+  const genericTitle = /^(new chat|hello|hey|question|conversation|file analysis|initial greeting)$/i.test(String(chatState.title || '').trim());
+  // Economy metadata cadence: title immediately while generic, then refresh memory/title only every 8 completed messages.
+  if (!force && !genericTitle && count % 8 !== 0) return;
   const rows = await env.DB.prepare("SELECT role,content FROM messages WHERE chat_id=? AND status='complete' ORDER BY rowid DESC LIMIT 24").bind(chatId).all();
-  const transcript = (rows.results || []).reverse().map(x => `${x.role}: ${x.content}`).join("\n").slice(0,32000);
+  const transcript = (rows.results || []).reverse().map(x => `${x.role}: ${x.content}`).join("\n").slice(0,24000);
   if (!transcript.trim()) return;
   const memoryEnabled = user.memory_enabled && (await getSetting(env,"memory_enabled","true")) !== "false";
-  const prompt = `Analyze the conversation as a whole, not just the first message. Return ONLY valid JSON with two keys: "title" and "summary".\n\nTitle rules:\n- 3 to 7 words.\n- Describe the actual subject, goal, person, project, decision, or task that the conversation became about.\n- Update the title when later messages reveal a clearer topic.\n- Never use generic titles like New Chat, Hello, Question, Conversation, or File Analysis unless nothing more specific exists.\n- Do not simply copy the first user message.\n\nSummary rules:\n- Compact memory summary, maximum 180 words.\n- Preserve stable preferences, project facts, decisions, names explicitly supplied, and unresolved tasks.\n- Do not invent information.\n\nConversation:\n${transcript}`;
-  const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", input:prompt, reasoning:{effort:"low"}, max_output_tokens:450, store:false }) });
+  const prompt = `Analyze the conversation as a whole. Return ONLY valid JSON with keys "title" and "summary".\n\nTitle: 3-7 words, describe the real subject/goal, never generic, do not simply copy the first message.\nSummary: maximum 140 words, preserve useful stable facts/decisions/preferences without inventing.\n\nConversation:\n${transcript}`;
+  const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", input:prompt, reasoning:{effort:"none"}, max_output_tokens:260, store:false }) });
   if (!r.ok) return;
   const data = await r.json();
+  await logUsageEvent(env,{ userId:user.id, chatId, usage:data.usage, requestKind:"metadata", responseId:data.id || null });
   const raw = extractOutputText(data).trim();
   const meta = parseLooseJsonObject(raw);
   const title = cleanText(meta?.title || "", 90).replace(/[\r\n]+/g," ").trim();
@@ -812,14 +853,14 @@ async function generateAssistantOnce(env, user, chatId, latestUserMsgId) {
   const assistantId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
   try {
-    const { input, instructions } = await buildOpenAIContext(env,user,chatId,{ intelligence:false, web:false });
-    const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", instructions, input, reasoning:{effort:"medium"}, max_output_tokens:12000, store:false }) });
+    const { input, instructions, imageCount } = await buildOpenAIContext(env,user,chatId,{ intelligence:false, web:false });
+    const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", instructions, input, reasoning:{effort:"low"}, max_output_tokens:12000, store:false }) });
     if (!r.ok) { const t=await r.text(); throw new Error(t.slice(0,500)); }
     const data = await r.json(); const text = extractOutputText(data).trim() || "I couldn't produce a response for that scheduled request.";
     await env.DB.prepare("UPDATE messages SET content=?,status='complete',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(text,assistantId).run();
     await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
     const usage=data.usage;
-    if (usage) await env.DB.prepare("INSERT INTO usage_events(id,user_id,chat_id,model,input_tokens,output_tokens,total_tokens) VALUES(?,?,?,?,?,?,?)").bind(crypto.randomUUID(),user.id,chatId,env.OPENAI_MODEL||"gpt-6-luna",Number(usage.input_tokens||0),Number(usage.output_tokens||0),Number(usage.total_tokens||0)).run();
+    if (usage) await logUsageEvent(env,{ userId:user.id, chatId, usage, imageCount, requestKind:"scheduled", responseId:data.id || null });
     return text;
   } catch (err) {
     await env.DB.prepare("UPDATE messages SET content=?,status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(safeError(err),assistantId).run().catch(()=>null);
@@ -849,11 +890,46 @@ async function adminStats(env, user) {
   }});
 }
 
+async function adminAiUsage(env, user, url) {
+  const deny = requireAdmin(user); if (deny) return deny;
+  const limit = Math.min(200, Math.max(10, Number(url.searchParams.get("limit") || 80)));
+  const [totals, recent] = await Promise.all([
+    env.DB.prepare(`SELECT
+      SUM(CASE WHEN request_kind IN ('chat','scheduled') THEN 1 ELSE 0 END) AS completed_replies,
+      COALESCE(SUM(image_count),0) AS images_analyzed,
+      COUNT(*) AS openai_requests,
+      COALESCE(SUM(input_tokens),0) AS input_tokens,
+      COALESCE(SUM(cached_input_tokens),0) AS cached_input_tokens,
+      COALESCE(SUM(output_tokens),0) AS output_tokens,
+      COALESCE(SUM(total_tokens),0) AS total_tokens,
+      COALESCE(SUM(estimated_cost_usd),0) AS estimated_cost_usd,
+      COALESCE(SUM(web_search_calls),0) AS web_search_calls,
+      MAX(created_at) AS last_updated
+      FROM usage_events`).first(),
+    env.DB.prepare(`SELECT ue.id,ue.user_id,ue.chat_id,ue.model,ue.input_tokens,ue.cached_input_tokens,ue.output_tokens,ue.total_tokens,
+      ue.estimated_cost_usd,ue.image_count,ue.request_kind,ue.web_search_calls,ue.created_at,
+      u.name AS user_name,u.email AS user_email,c.title AS chat_title
+      FROM usage_events ue
+      JOIN users u ON u.id=ue.user_id
+      LEFT JOIN chats c ON c.id=ue.chat_id
+      ORDER BY ue.created_at DESC LIMIT ?`).bind(limit).all()
+  ]);
+  return json({
+    pricing:{ model:"gpt-6-luna", tier:"standard", input_per_million:0.10, cached_input_per_million:0.01, output_per_million:0.50, web_search_per_call:0.01, long_context_threshold:272000 },
+    totals:{
+      completed_replies:Number(totals?.completed_replies||0), images_analyzed:Number(totals?.images_analyzed||0), openai_requests:Number(totals?.openai_requests||0),
+      input_tokens:Number(totals?.input_tokens||0), cached_input_tokens:Number(totals?.cached_input_tokens||0), output_tokens:Number(totals?.output_tokens||0), total_tokens:Number(totals?.total_tokens||0),
+      estimated_cost_usd:Number(totals?.estimated_cost_usd||0), web_search_calls:Number(totals?.web_search_calls||0), last_updated:totals?.last_updated||null
+    },
+    recent: recent.results || []
+  });
+}
+
 async function adminUsers(env,user,url) {
   const deny=requireAdmin(user); if(deny)return deny;
   const q=(url.searchParams.get("q")||"").trim().slice(0,100); const like=`%${q}%`;
   const base=`SELECT u.id,u.name,u.email,u.role,u.status,u.memory_enabled,u.daily_limit_override,u.daily_image_limit_override,u.unlimited_usage,u.admin_notes,u.created_at,u.last_seen_at,
-    (SELECT COUNT(*) FROM usage_events ue WHERE ue.user_id=u.id AND ue.created_at>=date('now')) AS requests_today,
+    (SELECT COUNT(*) FROM usage_events ue WHERE ue.user_id=u.id AND ue.created_at>=date('now') AND ue.request_kind IN ('chat','scheduled')) AS requests_today,
     (SELECT COUNT(*) FROM attachments a WHERE a.user_id=u.id AND a.mime_type LIKE 'image/%' AND a.created_at>=date('now')) AS images_today,
     (SELECT COUNT(*) FROM chats c WHERE c.user_id=u.id) AS chat_count,
     (SELECT COUNT(*) FROM messages m WHERE m.user_id=u.id) AS message_count,
