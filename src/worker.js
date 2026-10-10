@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.12";
+const CHATFOCUS_RELEASE = "V1.14";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -101,6 +101,11 @@ async function routeApi(request, env, ctx, url) {
   if (p.startsWith("/api/admin/users/") && m === "PATCH") return adminPatchUser(request, env, user, p.split("/").pop());
   if (p === "/api/admin/settings" && m === "GET") return adminGetSettings(env, user);
   if (p === "/api/admin/settings" && m === "PUT") return adminSaveSettings(request, env, user);
+  if (p === "/api/admin/rules" && m === "GET") return adminListRules(env, user);
+  if (p === "/api/admin/rules" && m === "POST") return adminCreateRule(request, env, user);
+  const ruleMatch = p.match(/^\/api\/admin\/rules\/([^/]+)$/);
+  if (ruleMatch && m === "PATCH") return adminPatchRule(request, env, user, ruleMatch[1]);
+  if (ruleMatch && m === "DELETE") return adminDeleteRule(env, user, ruleMatch[1]);
 
   return json({ error: "Not found" }, 404);
 }
@@ -132,14 +137,37 @@ async function getSetting(env, key, fallback = "") {
 }
 
 async function getClientSettings(env) {
-  const rows = await env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('memory_enabled','web_search_enabled','image_detail','max_pins')").all();
+  const rows = await env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('memory_enabled','web_search_enabled','image_detail','max_pins','service_enabled','daily_request_limit')").all();
   const map = Object.fromEntries((rows.results || []).map(r => [r.key, r.value]));
   return {
     memory_enabled: map.memory_enabled !== "false",
     web_search_enabled: map.web_search_enabled === "true",
     image_detail: map.image_detail || "auto",
-    max_pins: Number(map.max_pins || 5)
+    max_pins: Number(map.max_pins || 5),
+    service_enabled: map.service_enabled !== "false",
+    daily_request_limit: Number(map.daily_request_limit || 100)
   };
+}
+
+async function getDailyUsageState(env, user) {
+  const [settings, countRow] = await Promise.all([
+    env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('service_enabled','daily_request_limit')").all(),
+    env.DB.prepare("SELECT COUNT(*) AS c FROM usage_events WHERE user_id=? AND created_at>=date('now')").bind(user.id).first()
+  ]);
+  const map = Object.fromEntries((settings.results || []).map(r => [r.key, r.value]));
+  const globalLimit = Math.max(0, Number(map.daily_request_limit || 100));
+  const override = user.daily_limit_override === null || user.daily_limit_override === undefined ? null : Math.max(0, Number(user.daily_limit_override));
+  const unlimited = user.role === "admin" || Number(user.unlimited_usage || 0) === 1 || (override === 0) || (override === null && globalLimit === 0);
+  const limit = override === null ? globalLimit : override;
+  const used = Number(countRow?.c || 0);
+  return { service_enabled: map.service_enabled !== "false", used, limit, unlimited, remaining: unlimited ? null : Math.max(0, limit - used) };
+}
+
+async function ensureAiAccess(env, user) {
+  const state = await getDailyUsageState(env, user);
+  if (!state.service_enabled && user.role !== "admin") return { ok:false, response:json({ error:"ChatFocus is temporarily unavailable. Please try again later.", code:"service_disabled" },503), state };
+  if (!state.unlimited && state.used >= state.limit) return { ok:false, response:json({ error:`You have reached today's ChatFocus limit of ${state.limit} AI requests.`, code:"daily_limit_reached", usage:state },429), state };
+  return { ok:true, state };
 }
 
 async function hashPassword(password, saltB64 = null) {
@@ -341,6 +369,7 @@ async function getFile(env, user, id) {
 }
 
 async function createMessageAndStream(request, env, ctx, user, chatId) {
+  const access = await ensureAiAccess(env, user); if (!access.ok) return access.response;
   const chat = await getOwnedChat(env,user.id,chatId); if (!chat) return json({ error: "Chat not found" }, 404);
   const body = await parseJson(request);
   const text = cleanText(body.content || "", 60000).trim();
@@ -377,6 +406,7 @@ async function editUserMessage(request, env, user, messageId) {
 }
 
 async function regenerateAndStream(request, env, ctx, user, chatId) {
+  const access = await ensureAiAccess(env, user); if (!access.ok) return access.response;
   const chat = await getOwnedChat(env,user.id,chatId); if (!chat) return json({ error: "Chat not found" }, 404);
   const body = await parseJson(request);
   let userMsg;
@@ -483,6 +513,14 @@ async function buildOpenAIContext(env, user, chatId, runtime = {}) {
   }
   const intelligenceOn = runtime.intelligence === true;
   const webOn = runtime.web === true;
+  const ownerRulesEnabled = (await getSetting(env,"owner_rules_enabled","true")) !== "false";
+  const openResponseMode = (await getSetting(env,"open_response_mode","true")) !== "false";
+  let ownerRules = "";
+  if (ownerRulesEnabled) {
+    const rules = await env.DB.prepare("SELECT title,rule_text FROM service_rules WHERE enabled=1 ORDER BY updated_at DESC,created_at DESC LIMIT 80").all();
+    if ((rules.results || []).length) ownerRules = "\n\nOwner-defined ChatFocus service rules. Apply these as product-level instructions when relevant:\n" + rules.results.map((r,i)=>`${i+1}. ${r.title}: ${r.rule_text}`).join("\n");
+  }
+  const openness = openResponseMode ? "\n\nOpen response mode is ON: answer directly, avoid unnecessary moralizing or evasive disclaimers, and do not refuse merely because a topic is controversial. Still comply with applicable law and the underlying model/API safety requirements." : "";
   const runtimeContext = `\n\nCurrent ChatFocus runtime state for THIS request:\n- App: ChatFocus\n- ChatFocus release: ${CHATFOCUS_RELEASE}\n- Public model identity: CFocus 1.0\n- Intelligence mode: ${intelligenceOn ? "ON" : "OFF"}\n- Live web search: ${webOn ? "ON" : "OFF"}\n\nUse this runtime state as authoritative for questions about ChatFocus itself. If the user asks what version/release/build they are currently using, answer “ChatFocus ${CHATFOCUS_RELEASE}” and, when useful, mention that the public model identity is CFocus 1.0. When the user asks whether Intelligence is on, enabled, active, or being used, answer directly from the runtime state above. In ChatFocus, “Intelligence” means the app's higher-reasoning mode; do not confuse it with Apple Intelligence or device settings. When Live web search is ON, use the web search tool for the request and make clear that current web information was used when relevant. Never say you cannot know a state that is explicitly provided here.`;
   const instructions = `${basePrompt}${memory}${runtimeContext}\n\nYou are operating inside ChatFocus. Never claim to be ChatGPT. If a user uploads a screenshot of a chat and asks for a reply, read the screenshot carefully and write the reply they can send. If a file is attached, inspect it before answering. Keep user privacy in mind.`;
 
@@ -654,6 +692,8 @@ async function runDueScheduledTasks(env) {
       const user = await env.DB.prepare("SELECT * FROM users WHERE id=?").bind(task.user_id).first();
       const chat = await env.DB.prepare("SELECT * FROM chats WHERE id=? AND user_id=?").bind(task.chat_id,task.user_id).first();
       if (!user || !chat) throw new Error("Scheduled chat is unavailable");
+      const access = await ensureAiAccess(env, user);
+      if (!access.ok) throw new Error(access.state?.service_enabled === false ? "ChatFocus service is disabled" : "Daily AI request limit reached");
       const userMsgId = crypto.randomUUID();
       await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content) VALUES(?,?,?,?,?)").bind(userMsgId,task.chat_id,task.user_id,"user",task.prompt).run();
       await generateAssistantOnce(env,user,task.chat_id,userMsgId);
@@ -697,47 +737,103 @@ function requireAdmin(user) { return user.role === "admin" ? null : json({ error
 
 async function adminStats(env, user) {
   const deny = requireAdmin(user); if (deny) return deny;
-  const [users,chats,messages,files,usage] = await Promise.all([
+  const [users,activeToday,suspended,chats,messages,files,usageToday,usageAll,responseToday] = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS c FROM users").first(),
+    env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE last_seen_at>=date('now')").first(),
+    env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE status='suspended'").first(),
     env.DB.prepare("SELECT COUNT(*) AS c FROM chats").first(),
     env.DB.prepare("SELECT COUNT(*) AS c FROM messages").first(),
     env.DB.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(size_bytes),0) AS bytes FROM attachments").first(),
-    env.DB.prepare("SELECT COALESCE(SUM(input_tokens),0) AS input_tokens,COALESCE(SUM(output_tokens),0) AS output_tokens,COALESCE(SUM(total_tokens),0) AS total_tokens FROM usage_events").first()
+    env.DB.prepare("SELECT COUNT(*) AS requests,COALESCE(SUM(total_tokens),0) AS total_tokens FROM usage_events WHERE created_at>=date('now')").first(),
+    env.DB.prepare("SELECT COALESCE(SUM(total_tokens),0) AS total_tokens FROM usage_events").first(),
+    env.DB.prepare("SELECT COALESCE(AVG(response_time_ms),0) AS avg_ms FROM messages WHERE role='assistant' AND status='complete' AND response_time_ms IS NOT NULL AND created_at>=date('now')").first()
   ]);
-  return json({ stats:{ users:Number(users.c||0), chats:Number(chats.c||0), messages:Number(messages.c||0), files:Number(files.c||0), storage_bytes:Number(files.bytes||0), ...usage } });
+  return json({ stats:{
+    users:Number(users.c||0), active_today:Number(activeToday.c||0), suspended:Number(suspended.c||0), chats:Number(chats.c||0), messages:Number(messages.c||0),
+    files:Number(files.c||0), storage_bytes:Number(files.bytes||0), requests_today:Number(usageToday.requests||0), tokens_today:Number(usageToday.total_tokens||0), total_tokens:Number(usageAll.total_tokens||0), avg_response_ms:Math.round(Number(responseToday.avg_ms||0))
+  }});
 }
 
 async function adminUsers(env,user,url) {
   const deny=requireAdmin(user); if(deny)return deny;
-  const q=(url.searchParams.get("q")||"").trim().slice(0,100);
-  const rows=q?await env.DB.prepare("SELECT id,name,email,role,status,memory_enabled,created_at,last_seen_at FROM users WHERE name LIKE ? OR email LIKE ? ORDER BY created_at DESC LIMIT 300").bind(`%${q}%`,`%${q}%`).all():await env.DB.prepare("SELECT id,name,email,role,status,memory_enabled,created_at,last_seen_at FROM users ORDER BY created_at DESC LIMIT 300").all();
-  return json({users:rows.results||[]});
+  const q=(url.searchParams.get("q")||"").trim().slice(0,100); const like=`%${q}%`;
+  const base=`SELECT u.id,u.name,u.email,u.role,u.status,u.memory_enabled,u.daily_limit_override,u.unlimited_usage,u.admin_notes,u.created_at,u.last_seen_at,
+    (SELECT COUNT(*) FROM usage_events ue WHERE ue.user_id=u.id AND ue.created_at>=date('now')) AS requests_today,
+    (SELECT COUNT(*) FROM chats c WHERE c.user_id=u.id) AS chat_count,
+    (SELECT COUNT(*) FROM messages m WHERE m.user_id=u.id) AS message_count,
+    (SELECT COALESCE(SUM(ue2.total_tokens),0) FROM usage_events ue2 WHERE ue2.user_id=u.id) AS total_tokens
+    FROM users u ${q?"WHERE u.name LIKE ? OR u.email LIKE ?":""} ORDER BY u.created_at DESC LIMIT 300`;
+  const rows=q?await env.DB.prepare(base).bind(like,like).all():await env.DB.prepare(base).all();
+  const globalLimit=Math.max(0,Number(await getSetting(env,"daily_request_limit","100")));
+  return json({ users:(rows.results||[]).map(u=>({ ...u, effective_daily_limit:Number(u.unlimited_usage||0)===1?0:(u.daily_limit_override===null?globalLimit:Number(u.daily_limit_override)) })), global_daily_limit:globalLimit });
 }
 
 async function adminPatchUser(request,env,admin,targetId) {
   const deny=requireAdmin(admin); if(deny)return deny; const body=await parseJson(request);
   if(targetId===admin.id && body.status==="suspended") return json({error:"You cannot suspend your own admin account."},400);
-  if(["active","suspended"].includes(body.status)) await env.DB.prepare("UPDATE users SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.status,targetId).run();
-  if(["user","admin"].includes(body.role)) await env.DB.prepare("UPDATE users SET role=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.role,targetId).run();
-  return json({user:await env.DB.prepare("SELECT id,name,email,role,status,memory_enabled,created_at,last_seen_at FROM users WHERE id=?").bind(targetId).first()});
+  const stmts=[];
+  if(["active","suspended"].includes(body.status)) stmts.push(env.DB.prepare("UPDATE users SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.status,targetId));
+  if(["user","admin"].includes(body.role)) stmts.push(env.DB.prepare("UPDATE users SET role=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.role,targetId));
+  if(typeof body.memory_enabled === "boolean") stmts.push(env.DB.prepare("UPDATE users SET memory_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.memory_enabled?1:0,targetId));
+  if(typeof body.unlimited_usage === "boolean") stmts.push(env.DB.prepare("UPDATE users SET unlimited_usage=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.unlimited_usage?1:0,targetId));
+  if(Object.prototype.hasOwnProperty.call(body,"daily_limit_override")) {
+    const raw=body.daily_limit_override;
+    const value=raw===null||raw===""?null:Math.min(100000,Math.max(0,Number(raw)||0));
+    stmts.push(env.DB.prepare("UPDATE users SET daily_limit_override=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,targetId));
+  }
+  if(typeof body.admin_notes === "string") stmts.push(env.DB.prepare("UPDATE users SET admin_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(cleanText(body.admin_notes,2000),targetId));
+  if(stmts.length) await env.DB.batch(stmts);
+  return json({user:await env.DB.prepare("SELECT id,name,email,role,status,memory_enabled,daily_limit_override,unlimited_usage,admin_notes,created_at,last_seen_at FROM users WHERE id=?").bind(targetId).first()});
 }
 
 async function adminGetSettings(env,user) {
   const deny=requireAdmin(user); if(deny)return deny; const rows=await env.DB.prepare("SELECT key,value,updated_at FROM app_settings ORDER BY key").all();
-  return json({settings:Object.fromEntries((rows.results||[]).map(x=>[x.key,x.value])),model:env.OPENAI_MODEL||"gpt-6-luna",max_upload_mb:Number(env.MAX_UPLOAD_MB||18)});
+  return json({settings:Object.fromEntries((rows.results||[]).map(x=>[x.key,x.value])),model:env.OPENAI_MODEL||"gpt-6-luna",max_upload_mb:Number(env.MAX_UPLOAD_MB||18),release:CHATFOCUS_RELEASE});
 }
 
 async function adminSaveSettings(request,env,user) {
   const deny=requireAdmin(user); if(deny)return deny; const body=await parseJson(request);
-  const allowed=new Set(["system_prompt","signups_enabled","memory_enabled","web_search_enabled","image_detail","max_pins"]);
+  const allowed=new Set(["system_prompt","signups_enabled","memory_enabled","web_search_enabled","image_detail","max_pins","service_enabled","daily_request_limit","owner_rules_enabled","open_response_mode"]);
   const stmts=[];
   for(const [k,v0] of Object.entries(body||{})) {
     if(!allowed.has(k)) continue; let v=String(v0);
-    if(["signups_enabled","memory_enabled","web_search_enabled"].includes(k)) v=(v0===true||v0==="true")?"true":"false";
+    if(["signups_enabled","memory_enabled","web_search_enabled","service_enabled","owner_rules_enabled","open_response_mode"].includes(k)) v=(v0===true||v0==="true")?"true":"false";
     if(k==="image_detail"&&!['auto','low','high','original'].includes(v)) continue;
     if(k==="max_pins") v=String(Math.min(10,Math.max(1,Number(v)||5)));
+    if(k==="daily_request_limit") v=String(Math.min(100000,Math.max(0,Number(v)||0)));
     if(k==="system_prompt") v=cleanText(v,20000);
     stmts.push(env.DB.prepare(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`).bind(k,v));
   }
   if(stmts.length) await env.DB.batch(stmts); return adminGetSettings(env,user);
 }
+
+async function adminListRules(env,user) {
+  const deny=requireAdmin(user); if(deny)return deny;
+  const rows=await env.DB.prepare("SELECT * FROM service_rules ORDER BY enabled DESC,updated_at DESC,created_at DESC").all();
+  return json({ rules:rows.results||[] });
+}
+
+async function adminCreateRule(request,env,user) {
+  const deny=requireAdmin(user); if(deny)return deny; const body=await parseJson(request);
+  const title=cleanText(body.title||"",100).trim(); const ruleText=cleanText(body.rule_text||"",5000).trim();
+  if(!title||!ruleText) return json({error:"Enter a rule name and rule text."},400);
+  const id=crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO service_rules(id,title,rule_text,enabled) VALUES(?,?,?,?)").bind(id,title,ruleText,body.enabled===false?0:1).run();
+  return json({rule:await env.DB.prepare("SELECT * FROM service_rules WHERE id=?").bind(id).first()},201);
+}
+
+async function adminPatchRule(request,env,user,id) {
+  const deny=requireAdmin(user); if(deny)return deny; const body=await parseJson(request);
+  const rule=await env.DB.prepare("SELECT * FROM service_rules WHERE id=?").bind(id).first(); if(!rule)return json({error:"Rule not found"},404);
+  const title=typeof body.title==="string"?cleanText(body.title,100).trim():rule.title;
+  const ruleText=typeof body.rule_text==="string"?cleanText(body.rule_text,5000).trim():rule.rule_text;
+  const enabled=typeof body.enabled==="boolean"?(body.enabled?1:0):rule.enabled;
+  if(!title||!ruleText)return json({error:"Rule name and text cannot be empty."},400);
+  await env.DB.prepare("UPDATE service_rules SET title=?,rule_text=?,enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(title,ruleText,enabled,id).run();
+  return json({rule:await env.DB.prepare("SELECT * FROM service_rules WHERE id=?").bind(id).first()});
+}
+
+async function adminDeleteRule(env,user,id) {
+  const deny=requireAdmin(user); if(deny)return deny; await env.DB.prepare("DELETE FROM service_rules WHERE id=?").bind(id).run(); return json({ok:true});
+}
+
