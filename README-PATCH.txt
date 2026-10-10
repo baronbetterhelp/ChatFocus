@@ -1,8 +1,6 @@
-ChatFocus V1.12 Patch — Smooth Streaming & Tight Action Layout
+ChatFocus V1.13 Patch — Compact Assistant Action Bar
 
-For V1.11, replace only:
-- public/app.js
+For an existing V1.12 site, replace only:
 - public/styles.css
-- src/worker.js
 
-No migration or wrangler.toml change is required.
+This fixes the assistant action panel stretching unnecessarily across the screen while keeping the response-time chip aligned on the right.
