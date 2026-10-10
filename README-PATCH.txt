@@ -1,10 +1,7 @@
-ChatFocus V1.7 — Instant Controls & Runtime Awareness
+ChatFocus V1.10 Patch — Premium Assistant Actions
 
-Replace these files in your current V1.6 repository:
+For an existing V1.9 site, replace only:
 - public/app.js
 - public/styles.css
-- src/worker.js
 
-No D1 migration, R2 change, API key change, or wrangler.toml change is required.
-
-Then commit to main and redeploy Cloudflare.
+This patch upgrades the assistant message action row to a tighter premium layout and adds working Copy, Read Aloud, Share, and More actions.
