@@ -1,0 +1,15 @@
+{
+  "name": "chatfocus",
+  "version": "1.6.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 migrations apply chatfocus-db --local",
+    "db:remote": "wrangler d1 migrations apply chatfocus-db --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.45.0"
+  }
+}
