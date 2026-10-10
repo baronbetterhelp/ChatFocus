@@ -1,15 +1,13 @@
-# ChatFocus V1.5 — Composer Controls
+# ChatFocus V1.8 — Web Search & Version Awareness
 
-V1.5 refines the mobile composer controls while preserving the V1.4 backend and settings experience.
+V1.8 makes the previously ambiguous composer control a real **Web Search** toggle and gives CFocus exact awareness of the current ChatFocus release.
 
 ## Changes
+- The old target-like composer glyph is replaced by a clear Web button with a search icon.
+- Web Search is persisted per browser and shows an obvious active state.
+- When Web Search is ON, the backend adds OpenAI Responses API `web_search` and requires the tool to run for that request.
+- CFocus now knows the current application release is **ChatFocus V1.8** and the public model identity is **CFocus 1.0**.
+- Questions such as “what version am I using?” are answered from real runtime state instead of saying the build is unavailable.
+- Intelligence state awareness from V1.7 is preserved.
 
-- Replaces the placeholder dictation glyph with a real microphone icon.
-- The microphone button is now a true toggle: tap to start browser dictation, tap again to stop when supported.
-- Listening state is visually highlighted and accessible through `aria-pressed` / updated labels.
-- If browser speech recognition is unavailable, ChatFocus gives a clear fallback message instead of appearing broken.
-- When Intelligence is enabled from the `+` menu, an active Intelligence button appears immediately beside the microphone.
-- Tapping the active Intelligence button turns Intelligence back off.
-- On very small phones the Intelligence pill collapses to its icon so the composer remains responsive.
-
-No D1, R2, migration, API-key, or Cloudflare binding changes are required.
+No database migration is required.
