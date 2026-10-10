@@ -42,6 +42,14 @@ function bindEvents(){
   $("#accountBtn").addEventListener("click",openAccountPanel);
   $("#closeAccountPanel").addEventListener("click",closeAccountPanel);
   $("#logoutBtn").addEventListener("click",logout); $("#themeToggle").addEventListener("click",cycleTheme); $("#memoryToggleMenu").addEventListener("click",toggleMyMemory);
+  $("#settingsSearch").addEventListener("input",filterSettings);
+  $("#dictationSettings").addEventListener("click",()=>toast("Use the microphone button in chat whenever you want to dictate a message."));
+  $("#languageSettings").addEventListener("click",()=>toast("ChatFocus currently uses English for the interface."));
+  $("#savedChatsInfo").addEventListener("click",()=>toast("Your conversations are saved automatically to your account."));
+  $("#storageInfo").addEventListener("click",()=>toast("Uploaded images, PDFs and documents are stored privately."));
+  $("#modelInfo").addEventListener("click",()=>toast("CFocus 1.0 is the public ChatFocus model identity."));
+  $("#privacyInfo").addEventListener("click",()=>toast("Your account data and uploaded files are not exposed publicly."));
+  els.accountPanel.addEventListener("click",e=>{if(e.target===els.accountPanel)closeAccountPanel()});
   $("#accountAdminBtn").addEventListener("click",()=>{closeAccountPanel();switchView("admin")});
   $("#adminNav").addEventListener("click",()=>switchView("admin"));
   $$('[data-view="chat"]').forEach(b=>b.addEventListener("click",()=>switchView("chat")));
@@ -105,7 +113,8 @@ async function toggleMyMemory(){const enabled=!state.user.memory_enabled;const r
 function cycleTheme(){const seq=["system","dark","light"];state.theme=seq[(seq.indexOf(state.theme)+1)%seq.length];localStorage.setItem("chatfocus-theme",state.theme);applyTheme();syncAccountLabels()}
 function syncAccountLabels(){const mem=$("#memoryStateLabel"),theme=$("#themeStateLabel");if(mem)mem.textContent=state.user?.memory_enabled?"On":"Off";if(theme)theme.textContent=state.theme.charAt(0).toUpperCase()+state.theme.slice(1)}
 function applyTheme(){let t=state.theme;if(t==="system")t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";document.documentElement.dataset.theme=t}
-function openAccountPanel(){closeSidebar();syncAccountLabels();els.accountPanel.classList.remove("hidden")}function closeAccountPanel(){els.accountPanel.classList.add("hidden")}
+function openAccountPanel(){closeSidebar();syncAccountLabels();const q=$("#settingsSearch");if(q){q.value="";filterSettings()}els.accountPanel.classList.remove("hidden")}function closeAccountPanel(){els.accountPanel.classList.add("hidden")}
+function filterSettings(){const input=$("#settingsSearch");if(!input)return;const q=input.value.trim().toLowerCase();$$('[data-settings-search]').forEach(el=>{const hay=(el.dataset.settingsSearch||"").toLowerCase();el.classList.toggle("settings-filtered",!!q&&!hay.includes(q))});$$('[data-settings-section]').forEach(group=>{const visible=[...group.querySelectorAll('[data-settings-search]')].some(el=>!el.classList.contains("settings-filtered"));group.classList.toggle("settings-empty",!visible);const title=group.previousElementSibling;if(title?.classList.contains("settings-section-title"))title.classList.toggle("settings-empty",!visible)});const admin=$("#accountAdminSection");if(admin&&!admin.classList.contains("hidden")){const group=admin.querySelector('[data-settings-section]');const visible=group&&![...group.querySelectorAll('[data-settings-search]')].every(el=>el.classList.contains("settings-filtered"));admin.classList.toggle("settings-search-empty",!visible)}}
 function openSidebar(){els.sidebar.classList.add("open");els.sidebarBackdrop.classList.add("show")}function closeSidebar(){els.sidebar.classList.remove("open");els.sidebarBackdrop.classList.remove("show")}
 
 function toggleAttachMenu(force){const shouldOpen=force===undefined?els.attachMenu.classList.contains("hidden"):!!force;els.attachMenu.classList.toggle("hidden",!shouldOpen);els.attachMenuBtn.setAttribute("aria-expanded",String(shouldOpen));if(shouldOpen)syncIntelligenceUI()}
