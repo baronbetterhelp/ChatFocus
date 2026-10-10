@@ -395,7 +395,7 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
   const assistantId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
   try {
-    const { input, instructions } = await buildOpenAIContext(env, user, chatId);
+    const { input, instructions } = await buildOpenAIContext(env, user, chatId, { intelligence: requestedIntelligence, web: requestedWeb });
     const webAllowed = (await getSetting(env,"web_search_enabled","false")) === "true";
     const payload = {
       model: env.OPENAI_MODEL || "gpt-6-luna",
@@ -468,7 +468,7 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
   }
 }
 
-async function buildOpenAIContext(env, user, chatId) {
+async function buildOpenAIContext(env, user, chatId, runtime = {}) {
   const basePrompt = await getSetting(env,"system_prompt","You are ChatFocus, a capable multimodal assistant.");
   const memoryGlobal = (await getSetting(env,"memory_enabled","true")) !== "false";
   let memory = "";
@@ -478,7 +478,10 @@ async function buildOpenAIContext(env, user, chatId) {
       memory = "\n\nUseful context from this user's other saved conversations. Use only when relevant and do not claim certainty beyond it:\n" + summaries.results.map(x => `- ${x.title}: ${x.summary}`).join("\n");
     }
   }
-  const instructions = `${basePrompt}${memory}\n\nYou are operating inside ChatFocus. Never claim to be ChatGPT. If a user uploads a screenshot of a chat and asks for a reply, read the screenshot carefully and write the reply they can send. If a file is attached, inspect it before answering. Keep user privacy in mind.`;
+  const intelligenceOn = runtime.intelligence === true;
+  const webOn = runtime.web === true;
+  const runtimeContext = `\n\nCurrent ChatFocus runtime state for THIS request:\n- App: ChatFocus\n- Public model identity: CFocus 1.0\n- Intelligence mode: ${intelligenceOn ? "ON" : "OFF"}\n- Web search requested: ${webOn ? "ON" : "OFF"}\n\nWhen the user asks whether Intelligence is on, enabled, active, or being used, answer directly from the runtime state above. In ChatFocus, “Intelligence” means the app's higher-reasoning mode; do not confuse it with Apple Intelligence or device settings. Never say you cannot know the Intelligence state when it is provided here.`;
+  const instructions = `${basePrompt}${memory}${runtimeContext}\n\nYou are operating inside ChatFocus. Never claim to be ChatGPT. If a user uploads a screenshot of a chat and asks for a reply, read the screenshot carefully and write the reply they can send. If a file is attached, inspect it before answering. Keep user privacy in mind.`;
 
   const rows = await env.DB.prepare("SELECT rowid AS seq,* FROM messages WHERE chat_id=? AND status<>'error' ORDER BY rowid DESC LIMIT 30").bind(chatId).all();
   const messages = (rows.results || []).reverse();
@@ -672,7 +675,7 @@ async function generateAssistantOnce(env, user, chatId, latestUserMsgId) {
   const assistantId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
   try {
-    const { input, instructions } = await buildOpenAIContext(env,user,chatId);
+    const { input, instructions } = await buildOpenAIContext(env,user,chatId,{ intelligence:false, web:false });
     const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", instructions, input, reasoning:{effort:"medium"}, max_output_tokens:12000, store:false }) });
     if (!r.ok) { const t=await r.text(); throw new Error(t.slice(0,500)); }
     const data = await r.json(); const text = extractOutputText(data).trim() || "I couldn't produce a response for that scheduled request.";
