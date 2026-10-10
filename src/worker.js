@@ -19,6 +19,9 @@ export default {
       console.error(err);
       return json({ error: "Something went wrong.", detail: safeError(err) }, 500);
     }
+  },
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(runDueScheduledTasks(env));
   }
 };
 
@@ -38,12 +41,44 @@ async function routeApi(request, env, ctx, url) {
   if (p === "/api/me" && m === "GET") return json({ user: publicUser(user), settings: await getClientSettings(env) });
   if (p === "/api/me/memory" && m === "PATCH") return updateMyMemory(request, env, user);
 
+  if (p === "/api/library" && m === "GET") return listLibrary(env, user, url);
+  if (p === "/api/projects" && m === "GET") return listProjects(env, user);
+  if (p === "/api/projects" && m === "POST") return createProject(request, env, user);
+  if (p === "/api/schedules" && m === "GET") return listSchedules(env, user);
+  if (p === "/api/schedules" && m === "POST") return createSchedule(request, env, user);
+
+  let workspaceMatch = p.match(/^\/api\/projects\/([^/]+)$/);
+  if (workspaceMatch) {
+    if (m === "GET") return getProject(env, user, workspaceMatch[1]);
+    if (m === "PATCH") return patchProject(request, env, user, workspaceMatch[1]);
+    if (m === "DELETE") return deleteProject(env, user, workspaceMatch[1]);
+  }
+  workspaceMatch = p.match(/^\/api\/schedules\/([^/]+)$/);
+  if (workspaceMatch) {
+    if (m === "PATCH") return patchSchedule(request, env, user, workspaceMatch[1]);
+    if (m === "DELETE") return deleteSchedule(env, user, workspaceMatch[1]);
+  }
+
   if (p === "/api/chats" && m === "GET") return listChats(env, user, url);
   if (p === "/api/chats" && m === "POST") return createChat(request, env, user);
   if (p === "/api/uploads" && m === "POST") return uploadFile(request, env, user);
   if (p.startsWith("/api/files/") && m === "GET") return getFile(env, user, decodeURIComponent(p.slice("/api/files/".length)));
 
-  let match = p.match(/^\/api\/chats\/([^/]+)$/);
+  let match = p.match(/^\/api\/chats\/([^/]+)\/retitle$/);
+  if (match && m === "POST") {
+    const chat = await getOwnedChat(env, user.id, match[1]);
+    if (!chat) return json({ error: "Chat not found" }, 404);
+    await updateChatMetadata(env, user, match[1]);
+    return json({ chat: await getOwnedChat(env, user.id, match[1]) });
+  }
+
+  match = p.match(/^\/api\/chats\/([^/]+)\/meta$/);
+  if (match && m === "GET") {
+    const chat = await getOwnedChat(env, user.id, match[1]);
+    return chat ? json({ chat }) : json({ error: "Chat not found" }, 404);
+  }
+
+  match = p.match(/^\/api\/chats\/([^/]+)$/);
   if (match) {
     const chatId = match[1];
     if (m === "GET") return getChat(env, user, chatId);
@@ -213,10 +248,17 @@ async function listChats(env, user, url) {
 }
 
 async function createChat(request, env, user) {
-  let title = "New chat";
-  try { const body = await request.json(); if (body?.title) title = cleanText(body.title, 90).trim() || title; } catch {}
+  let title = "New chat", projectId = null, autoTitle = 1;
+  try {
+    const body = await request.json();
+    if (body?.title) { title = cleanText(body.title, 90).trim() || title; autoTitle = 0; }
+    if (body?.project_id) {
+      const project = await env.DB.prepare("SELECT id FROM projects WHERE id=? AND user_id=?").bind(String(body.project_id), user.id).first();
+      if (project) projectId = project.id;
+    }
+  } catch {}
   const id = crypto.randomUUID();
-  await env.DB.prepare("INSERT INTO chats(id,user_id,title) VALUES(?,?,?)").bind(id, user.id, title).run();
+  await env.DB.prepare("INSERT INTO chats(id,user_id,title,project_id,auto_title) VALUES(?,?,?,?,?)").bind(id, user.id, title, projectId, autoTitle).run();
   return json({ chat: await env.DB.prepare("SELECT * FROM chats WHERE id=?").bind(id).first() }, 201);
 }
 
@@ -241,7 +283,15 @@ async function patchChat(request, env, user, chatId) {
   const body = await parseJson(request);
   if (typeof body.title === "string") {
     const title = cleanText(body.title, 90).trim() || "Untitled chat";
-    await env.DB.prepare("UPDATE chats SET title=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(title, chatId, user.id).run();
+    await env.DB.prepare("UPDATE chats SET title=?,auto_title=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(title, chatId, user.id).run();
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "project_id")) {
+    let projectId = body.project_id ? String(body.project_id) : null;
+    if (projectId) {
+      const project = await env.DB.prepare("SELECT id FROM projects WHERE id=? AND user_id=?").bind(projectId, user.id).first();
+      if (!project) return json({ error: "Project not found" }, 404);
+    }
+    await env.DB.prepare("UPDATE chats SET project_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(projectId, chatId, user.id).run();
   }
   if (typeof body.pinned === "boolean") {
     if (body.pinned && !chat.pinned) {
@@ -306,10 +356,7 @@ async function createMessageAndStream(request, env, ctx, user, chatId) {
     const placeholders = attachmentIds.map(() => "?").join(",");
     await env.DB.prepare(`UPDATE attachments SET message_id=? WHERE user_id=? AND chat_id=? AND id IN (${placeholders})`).bind(msgId,user.id,chatId,...attachmentIds).run();
   }
-  if (chat.title === "New chat") {
-    const title = makeLocalTitle(text, attachmentIds.length);
-    await env.DB.prepare("UPDATE chats SET title=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(title,chatId).run();
-  } else await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
+  await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
   return streamAssistant(env, ctx, user, chatId, msgId, !!body.web_search, !!body.intelligence);
 }
 
@@ -406,7 +453,7 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
               .bind(crypto.randomUUID(),user.id,chatId,env.OPENAI_MODEL || "gpt-6-luna",Number(usage.input_tokens||0),Number(usage.output_tokens||0),Number(usage.total_tokens||0)).run();
           }
           send({ type: "done", message_id: assistantId, response_id: responseId, usage });
-          ctx.waitUntil(updateChatSummary(env,user,chatId).catch(console.error));
+          ctx.waitUntil(updateChatMetadata(env,user,chatId).catch(console.error));
           controller.close();
         } catch (err) {
           await env.DB.prepare("UPDATE messages SET content=?,status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(finalText || "Generation interrupted.",assistantId).run().catch(()=>null);
@@ -467,22 +514,177 @@ function extractOutputText(payload) {
   return parts.join("\n").trim();
 }
 
-async function updateChatSummary(env, user, chatId) {
-  if (!env.OPENAI_API_KEY || !user.memory_enabled || (await getSetting(env,"memory_enabled","true")) === "false") return;
-  const rows = await env.DB.prepare("SELECT role,content FROM messages WHERE chat_id=? AND status='complete' ORDER BY rowid DESC LIMIT 18").bind(chatId).all();
-  const transcript = (rows.results || []).reverse().map(x => `${x.role}: ${x.content}`).join("\n").slice(0,28000);
+async function updateChatMetadata(env, user, chatId) {
+  if (!env.OPENAI_API_KEY) return;
+  const rows = await env.DB.prepare("SELECT role,content FROM messages WHERE chat_id=? AND status='complete' ORDER BY rowid DESC LIMIT 24").bind(chatId).all();
+  const transcript = (rows.results || []).reverse().map(x => `${x.role}: ${x.content}`).join("\n").slice(0,32000);
   if (!transcript.trim()) return;
-  const prompt = `Create a compact memory summary of this conversation for future relevant chats. Preserve stable preferences, project facts, decisions, names the user explicitly supplied, and unresolved tasks. Do not invent anything. Avoid sensitive personal data unless it is necessary to the user's ongoing task. Max 180 words.\n\n${transcript}`;
-  const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", input:prompt, reasoning:{effort:"low"}, max_output_tokens:350, store:false }) });
+  const memoryEnabled = user.memory_enabled && (await getSetting(env,"memory_enabled","true")) !== "false";
+  const prompt = `Analyze the conversation as a whole, not just the first message. Return ONLY valid JSON with two keys: "title" and "summary".\n\nTitle rules:\n- 3 to 7 words.\n- Describe the actual subject, goal, person, project, decision, or task that the conversation became about.\n- Update the title when later messages reveal a clearer topic.\n- Never use generic titles like New Chat, Hello, Question, Conversation, or File Analysis unless nothing more specific exists.\n- Do not simply copy the first user message.\n\nSummary rules:\n- Compact memory summary, maximum 180 words.\n- Preserve stable preferences, project facts, decisions, names explicitly supplied, and unresolved tasks.\n- Do not invent information.\n\nConversation:\n${transcript}`;
+  const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", input:prompt, reasoning:{effort:"low"}, max_output_tokens:450, store:false }) });
   if (!r.ok) return;
-  const data = await r.json(); const summary = extractOutputText(data).slice(0,5000); if (!summary) return;
-  await env.DB.prepare(`INSERT INTO chat_summaries(chat_id,user_id,summary,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id) DO UPDATE SET summary=excluded.summary,updated_at=CURRENT_TIMESTAMP`).bind(chatId,user.id,summary).run();
+  const data = await r.json();
+  const raw = extractOutputText(data).trim();
+  const meta = parseLooseJsonObject(raw);
+  const title = cleanText(meta?.title || "", 90).replace(/[\r\n]+/g," ").trim();
+  const summary = cleanText(meta?.summary || "", 5000).trim();
+  if (summary && memoryEnabled) {
+    await env.DB.prepare(`INSERT INTO chat_summaries(chat_id,user_id,summary,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(chat_id) DO UPDATE SET summary=excluded.summary,updated_at=CURRENT_TIMESTAMP`).bind(chatId,user.id,summary).run();
+  }
+  if (title && !/^(new chat|hello|question|conversation|file analysis)$/i.test(title)) {
+    await env.DB.prepare("UPDATE chats SET title=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND auto_title=1").bind(title,chatId,user.id).run();
+  }
 }
 
-function makeLocalTitle(text, files) {
-  const t = String(text || "").replace(/\s+/g," ").trim();
-  if (t) return t.length > 54 ? t.slice(0,54).replace(/\s+\S*$/,"") + "…" : t;
-  return files ? "File analysis" : "New chat";
+function parseLooseJsonObject(raw) {
+  try { return JSON.parse(raw); } catch {}
+  const m = String(raw || "").match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch { return null; }
+}
+
+async function listLibrary(env, user, url) {
+  const q = (url.searchParams.get("q") || "").trim().slice(0,100);
+  const like = `%${q}%`;
+  const sql = `SELECT a.id,a.filename,a.mime_type,a.size_bytes,a.created_at,a.chat_id,c.title AS chat_title
+    FROM attachments a LEFT JOIN chats c ON c.id=a.chat_id
+    WHERE a.user_id=? AND a.message_id IS NOT NULL ${q ? "AND (a.filename LIKE ? OR c.title LIKE ?)" : ""}
+    ORDER BY a.created_at DESC LIMIT 300`;
+  const rows = q ? await env.DB.prepare(sql).bind(user.id,like,like).all() : await env.DB.prepare(sql).bind(user.id).all();
+  return json({ files: rows.results || [] });
+}
+
+async function listProjects(env, user) {
+  const rows = await env.DB.prepare(`SELECT p.*,COUNT(c.id) AS chat_count
+    FROM projects p LEFT JOIN chats c ON c.project_id=p.id AND c.user_id=p.user_id AND c.archived=0
+    WHERE p.user_id=? GROUP BY p.id ORDER BY p.updated_at DESC`).bind(user.id).all();
+  return json({ projects: rows.results || [] });
+}
+
+async function createProject(request, env, user) {
+  const body = await parseJson(request); const name = cleanText(body.name || "",80).replace(/\s+/g," ").trim();
+  if (name.length < 2) return json({ error:"Enter a project name." },400);
+  const id = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO projects(id,user_id,name) VALUES(?,?,?)").bind(id,user.id,name).run();
+  return json({ project: await env.DB.prepare("SELECT * FROM projects WHERE id=? AND user_id=?").bind(id,user.id).first() },201);
+}
+
+async function getProject(env, user, projectId) {
+  const project = await env.DB.prepare("SELECT * FROM projects WHERE id=? AND user_id=?").bind(projectId,user.id).first();
+  if (!project) return json({ error:"Project not found" },404);
+  const chats = await env.DB.prepare("SELECT * FROM chats WHERE user_id=? AND project_id=? AND archived=0 ORDER BY pinned DESC,updated_at DESC").bind(user.id,projectId).all();
+  return json({ project, chats: chats.results || [] });
+}
+
+async function patchProject(request, env, user, projectId) {
+  const project = await env.DB.prepare("SELECT id FROM projects WHERE id=? AND user_id=?").bind(projectId,user.id).first();
+  if (!project) return json({ error:"Project not found" },404);
+  const body = await parseJson(request); const name = cleanText(body.name || "",80).replace(/\s+/g," ").trim();
+  if (name.length < 2) return json({ error:"Enter a project name." },400);
+  await env.DB.prepare("UPDATE projects SET name=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(name,projectId,user.id).run();
+  return json({ project: await env.DB.prepare("SELECT * FROM projects WHERE id=? AND user_id=?").bind(projectId,user.id).first() });
+}
+
+async function deleteProject(env, user, projectId) {
+  const project = await env.DB.prepare("SELECT id FROM projects WHERE id=? AND user_id=?").bind(projectId,user.id).first();
+  if (!project) return json({ error:"Project not found" },404);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE chats SET project_id=NULL WHERE user_id=? AND project_id=?").bind(user.id,projectId),
+    env.DB.prepare("DELETE FROM projects WHERE id=? AND user_id=?").bind(projectId,user.id)
+  ]);
+  return json({ ok:true });
+}
+
+function toSqlDateTime(v) {
+  const d = new Date(v); if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0,19).replace("T"," ");
+}
+
+async function listSchedules(env, user) {
+  const rows = await env.DB.prepare(`SELECT s.*,c.title AS chat_title FROM scheduled_tasks s JOIN chats c ON c.id=s.chat_id
+    WHERE s.user_id=? ORDER BY s.enabled DESC,s.next_run_at ASC,s.created_at DESC LIMIT 200`).bind(user.id).all();
+  return json({ schedules: rows.results || [] });
+}
+
+async function createSchedule(request, env, user) {
+  const body = await parseJson(request); const prompt = cleanText(body.prompt || "",12000).trim();
+  const frequency = ["once","daily","weekly"].includes(body.frequency) ? body.frequency : "once";
+  const nextRun = toSqlDateTime(body.run_at); if (!prompt) return json({ error:"Enter a prompt to schedule." },400);
+  if (!nextRun || new Date(body.run_at).getTime() <= Date.now()+30000) return json({ error:"Choose a future date and time." },400);
+  let chatId = body.chat_id ? String(body.chat_id) : "";
+  let chat = chatId ? await getOwnedChat(env,user.id,chatId) : null;
+  if (!chat) {
+    chatId = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO chats(id,user_id,title,auto_title) VALUES(?,?,?,1)").bind(chatId,user.id,"Scheduled conversation").run();
+  }
+  const id = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO scheduled_tasks(id,user_id,chat_id,prompt,frequency,next_run_at) VALUES(?,?,?,?,?,?)").bind(id,user.id,chatId,prompt,frequency,nextRun).run();
+  return json({ schedule: await env.DB.prepare("SELECT * FROM scheduled_tasks WHERE id=?").bind(id).first() },201);
+}
+
+async function patchSchedule(request, env, user, id) {
+  const task = await env.DB.prepare("SELECT * FROM scheduled_tasks WHERE id=? AND user_id=?").bind(id,user.id).first();
+  if (!task) return json({ error:"Scheduled task not found" },404);
+  const body = await parseJson(request);
+  const enabled = typeof body.enabled === "boolean" ? (body.enabled ? 1 : 0) : task.enabled;
+  const prompt = typeof body.prompt === "string" ? cleanText(body.prompt,12000).trim() : task.prompt;
+  const frequency = ["once","daily","weekly"].includes(body.frequency) ? body.frequency : task.frequency;
+  const nextRun = body.run_at ? toSqlDateTime(body.run_at) : task.next_run_at;
+  if (!prompt || !nextRun) return json({ error:"Invalid scheduled task." },400);
+  await env.DB.prepare("UPDATE scheduled_tasks SET prompt=?,frequency=?,next_run_at=?,enabled=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(prompt,frequency,nextRun,enabled,id,user.id).run();
+  return json({ schedule: await env.DB.prepare("SELECT * FROM scheduled_tasks WHERE id=? AND user_id=?").bind(id,user.id).first() });
+}
+
+async function deleteSchedule(env, user, id) {
+  await env.DB.prepare("DELETE FROM scheduled_tasks WHERE id=? AND user_id=?").bind(id,user.id).run();
+  return json({ ok:true });
+}
+
+async function runDueScheduledTasks(env) {
+  const rows = await env.DB.prepare(`SELECT s.*,u.status,u.memory_enabled FROM scheduled_tasks s JOIN users u ON u.id=s.user_id
+    WHERE s.enabled=1 AND s.next_run_at<=CURRENT_TIMESTAMP AND u.status='active' ORDER BY s.next_run_at ASC LIMIT 20`).all();
+  for (const task of rows.results || []) {
+    try {
+      const user = await env.DB.prepare("SELECT * FROM users WHERE id=?").bind(task.user_id).first();
+      const chat = await env.DB.prepare("SELECT * FROM chats WHERE id=? AND user_id=?").bind(task.chat_id,task.user_id).first();
+      if (!user || !chat) throw new Error("Scheduled chat is unavailable");
+      const userMsgId = crypto.randomUUID();
+      await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content) VALUES(?,?,?,?,?)").bind(userMsgId,task.chat_id,task.user_id,"user",task.prompt).run();
+      await generateAssistantOnce(env,user,task.chat_id,userMsgId);
+      await updateChatMetadata(env,user,task.chat_id).catch(()=>null);
+      if (task.frequency === "once") {
+        await env.DB.prepare("UPDATE scheduled_tasks SET enabled=0,last_run_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(task.id).run();
+      } else {
+        const shift = task.frequency === "weekly" ? "+7 days" : "+1 day";
+        await env.DB.prepare("UPDATE scheduled_tasks SET next_run_at=datetime(next_run_at,?),last_run_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(shift,task.id).run();
+      }
+    } catch (err) {
+      const msg = safeError(err);
+      const shift = task.frequency === "once" ? null : (task.frequency === "weekly" ? "+7 days" : "+1 day");
+      if (shift) await env.DB.prepare("UPDATE scheduled_tasks SET next_run_at=datetime(next_run_at,?),last_error=?,last_run_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(shift,msg,task.id).run().catch(()=>null);
+      else await env.DB.prepare("UPDATE scheduled_tasks SET enabled=0,last_error=?,last_run_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(msg,task.id).run().catch(()=>null);
+    }
+  }
+}
+
+async function generateAssistantOnce(env, user, chatId, latestUserMsgId) {
+  if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
+  const assistantId = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
+  try {
+    const { input, instructions } = await buildOpenAIContext(env,user,chatId);
+    const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", instructions, input, reasoning:{effort:"medium"}, max_output_tokens:12000, store:false }) });
+    if (!r.ok) { const t=await r.text(); throw new Error(t.slice(0,500)); }
+    const data = await r.json(); const text = extractOutputText(data).trim() || "I couldn't produce a response for that scheduled request.";
+    await env.DB.prepare("UPDATE messages SET content=?,status='complete',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(text,assistantId).run();
+    await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
+    const usage=data.usage;
+    if (usage) await env.DB.prepare("INSERT INTO usage_events(id,user_id,chat_id,model,input_tokens,output_tokens,total_tokens) VALUES(?,?,?,?,?,?,?)").bind(crypto.randomUUID(),user.id,chatId,env.OPENAI_MODEL||"gpt-6-luna",Number(usage.input_tokens||0),Number(usage.output_tokens||0),Number(usage.total_tokens||0)).run();
+    return text;
+  } catch (err) {
+    await env.DB.prepare("UPDATE messages SET content=?,status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(safeError(err),assistantId).run().catch(()=>null);
+    throw err;
+  }
 }
 
 function requireAdmin(user) { return user.role === "admin" ? null : json({ error:"Admin access required" },403); }
