@@ -1,0 +1,278 @@
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const state = {
+  user:null, settings:null, chats:[], currentChat:null, messages:[], pending:[], generating:false,
+  controller:null, authMode:"login", view:"chat", web:localStorage.getItem("chatfocus-web")==="true", intelligence:localStorage.getItem("chatfocus-intelligence")==="true", theme:localStorage.getItem("chatfocus-theme")||"system",
+  recognition:null, dictating:false, chatCache:new Map(), projects:[], library:[], schedules:[], activeProject:null, streamRenderQueued:false, chatCreatePromise:null
+};
+
+const els = {
+  authView:$("#authView"),appView:$("#appView"),authForm:$("#authForm"),authName:$("#authName"),authEmail:$("#authEmail"),authPassword:$("#authPassword"),nameField:$("#nameField"),authTitle:$("#authTitle"),authSubtitle:$("#authSubtitle"),authSubmit:$("#authSubmit"),authSwitch:$("#authSwitch"),
+  sidebar:$("#sidebar"),sidebarBackdrop:$("#sidebarBackdrop"),pinnedChatList:$("#pinnedChatList"),recentChatList:$("#recentChatList"),pinnedSection:$("#pinnedSection"),chatSearch:$("#chatSearch"),currentChatTitle:$("#currentChatTitle"),messageList:$("#messageList"),messagesScroller:$("#messagesScroller"),composer:$("#composer"),fileInput:$("#fileInput"),cameraInput:$("#cameraInput"),photoInput:$("#photoInput"),attachMenu:$("#attachMenu"),attachMenuBtn:$("#attachMenuBtn"),attachmentTray:$("#attachmentTray"),sendBtn:$("#sendBtn"),stopBtn:$("#stopBtn"),webToggle:$("#webToggle"),adminNav:$("#adminNav"),chatView:$("#chatView"),libraryView:$("#libraryView"),projectsView:$("#projectsView"),scheduledView:$("#scheduledView"),adminView:$("#adminView"),accountPanel:$("#accountPanel")
+};
+
+boot();
+
+async function boot(){
+  applyTheme(); bindEvents();
+  const res=await fetch("/api/me");
+  if(res.ok){ const data=await res.json(); state.user=data.user; state.settings=data.settings; await enterApp(); }
+  else showAuth();
+}
+
+function bindEvents(){
+  els.authForm.addEventListener("submit",onAuthSubmit);
+  els.authSwitch.addEventListener("click",toggleAuthMode);
+  $("#togglePassword").addEventListener("click",()=>{els.authPassword.type=els.authPassword.type==="password"?"text":"password"});
+  $("#newChatBtn").addEventListener("click",()=>newChat(true));
+  $("#brandHome").addEventListener("click",()=>{switchView("chat"); closeSidebar();});
+  $("#refreshChats").addEventListener("click",()=>loadChats());
+  $("#openSidebar").addEventListener("click",openSidebar); $("#closeSidebar").addEventListener("click",closeSidebar); els.sidebarBackdrop.addEventListener("click",closeSidebar);
+  els.chatSearch.addEventListener("input",()=>renderChats(els.chatSearch.value));
+  els.sendBtn.addEventListener("click",sendMessage); $("#stopBtn").addEventListener("click",stopGeneration);
+  els.composer.addEventListener("input",autoGrow); els.composer.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendMessage();}});
+  els.fileInput.addEventListener("change",e=>handleFiles([...e.target.files]));
+  els.cameraInput.addEventListener("change",e=>handleFiles([...e.target.files]));
+  els.photoInput.addEventListener("change",e=>handleFiles([...e.target.files]));
+  els.attachMenuBtn.addEventListener("click",e=>{e.stopPropagation();toggleAttachMenu()});
+  els.attachMenu.addEventListener("click",handleAttachMenuAction);
+  syncIntelligenceUI(); syncWebUI();
+  $("#micBtn").addEventListener("click",toggleDictation);
+  $("#intelligenceActiveBtn").addEventListener("click",()=>setIntelligence(false));
+  els.webToggle.addEventListener("click",()=>setWebSearch(!state.web));
+  $("#renameChatBtn").addEventListener("click",renameCurrentChat); $("#pinChatBtn").addEventListener("click",pinCurrentChat); $("#deleteChatBtn").addEventListener("click",deleteCurrentChat);
+  $("#accountBtn").addEventListener("click",openAccountPanel);
+  $("#closeAccountPanel").addEventListener("click",closeAccountPanel);
+  $("#logoutBtn").addEventListener("click",logout); $("#themeToggle").addEventListener("click",cycleTheme); $("#memoryToggleMenu").addEventListener("click",toggleMyMemory);
+  $("#settingsSearch").addEventListener("input",filterSettings);
+  $("#dictationSettings").addEventListener("click",()=>toast("Use the microphone button in chat whenever you want to dictate a message."));
+  $("#languageSettings").addEventListener("click",()=>toast("ChatFocus currently uses English for the interface."));
+  $("#savedChatsInfo").addEventListener("click",()=>toast("Your conversations are saved automatically to your account."));
+  $("#storageInfo").addEventListener("click",()=>toast("Uploaded images, PDFs and documents are stored privately."));
+  $("#modelInfo").addEventListener("click",()=>toast("You are using ChatFocus V1.8 with CFocus 1.0."));
+  $("#privacyInfo").addEventListener("click",()=>toast("Your account data and uploaded files are not exposed publicly."));
+  els.accountPanel.addEventListener("click",e=>{if(e.target===els.accountPanel)closeAccountPanel()});
+  $("#accountAdminBtn").addEventListener("click",()=>{closeAccountPanel();switchView("admin")});
+  $("#adminNav").addEventListener("click",()=>switchView("admin"));
+  $("#libraryNav").addEventListener("click",()=>switchView("library"));
+  $("#projectsNav").addEventListener("click",()=>switchView("projects"));
+  $("#scheduledNav").addEventListener("click",()=>switchView("scheduled"));
+  $("#librarySearch").addEventListener("input",debounce(()=>loadLibrary($("#librarySearch").value),160));
+  $("#newProjectBtn").addEventListener("click",()=>toggleProjectCreate(true));
+  $("#cancelProjectBtn").addEventListener("click",()=>toggleProjectCreate(false));
+  $("#createProjectBtn").addEventListener("click",createProject);
+  $("#projectNameInput").addEventListener("keydown",e=>{if(e.key==="Enter")createProject()});
+  $("#newScheduleBtn").addEventListener("click",()=>toggleScheduleForm(true));
+  $("#cancelScheduleBtn").addEventListener("click",()=>toggleScheduleForm(false));
+  $("#saveScheduleBtn").addEventListener("click",createSchedule);
+  $("#adminRefresh").addEventListener("click",loadAdmin); $("#adminUserSearch").addEventListener("input",debounce(loadAdminUsers,280)); $("#saveAdminSettings").addEventListener("click",saveAdminSettings);
+  $$(".suggestion").forEach(b=>b.addEventListener("click",()=>{els.composer.value=b.dataset.prompt||"";autoGrow();els.composer.focus();}));
+  $("#confirmCancel").addEventListener("click",()=>closeConfirm(false));
+  document.addEventListener("click",e=>{if(!e.target.closest(".chat-row")) $$(".chat-menu").forEach(x=>x.remove());if(!e.target.closest(".attach-menu-wrap"))closeAttachMenu();});
+  window.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){e.preventDefault();newChat(true)} if(e.key==="Escape"){if(!els.attachMenu.classList.contains("hidden"))closeAttachMenu();else if(!els.accountPanel.classList.contains("hidden"))closeAccountPanel();else closeSidebar()}});
+  ["dragenter","dragover"].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();if(state.user)$("#dropHint").classList.remove("hidden")}));
+  ["dragleave","drop"].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();$("#dropHint").classList.add("hidden")}));
+  document.addEventListener("drop",e=>{if(e.dataTransfer?.files?.length)handleFiles([...e.dataTransfer.files])});
+}
+
+function showAuth(){els.appView.classList.add("hidden");els.authView.classList.remove("hidden")}
+function toggleAuthMode(){state.authMode=state.authMode==="login"?"signup":"login";const sign=state.authMode==="signup";els.nameField.classList.toggle("hidden",!sign);els.authName.required=sign;els.authPassword.autocomplete=sign?"new-password":"current-password";els.authTitle.textContent=sign?"Create your account":"Welcome back";els.authSubtitle.textContent=sign?"Your chats, images and files stay connected to your workspace.":"Continue your conversations, files and visual work.";els.authSubmit.querySelector("span").textContent=sign?"Create account":"Sign in";els.authSwitch.textContent=sign?"Already have an account? Sign in":"New to ChatFocus? Create an account"}
+async function onAuthSubmit(e){e.preventDefault();const body={email:els.authEmail.value,password:els.authPassword.value,...(state.authMode==="signup"?{name:els.authName.value}:{})};setButtonBusy(els.authSubmit,true);const r=await api(`/api/auth/${state.authMode}`,{method:"POST",body});setButtonBusy(els.authSubmit,false);if(!r.ok)return toast(r.error||"Unable to continue","error");state.user=r.user;const me=await api("/api/me");state.settings=me.settings;await enterApp()}
+async function enterApp(){els.authView.classList.add("hidden");els.appView.classList.remove("hidden");const initial=(state.user.name||"C").trim()[0].toUpperCase();$("#accountName").textContent=state.user.name;$("#accountEmail").textContent=state.user.email;$("#avatar").textContent=initial;$("#accountNameLarge").textContent=state.user.name;$("#accountEmailLarge").textContent=state.user.email;$("#accountAvatarLarge").textContent=initial;syncAccountLabels();if(state.user.role==="admin"){els.adminNav.classList.remove("hidden");$("#accountAdminSection").classList.remove("hidden")}if(state.settings?.web_search_enabled){els.webToggle.classList.remove("hidden");syncWebUI()}else{setWebSearch(false,{silent:true,persist:false});els.webToggle.classList.add("hidden")}await loadChats();if(state.chats.length)await openChat(state.chats[0].id);else await newChat(false)}
+
+async function api(url,{method="GET",body,headers}={}){try{const opts={method,headers:{...(body instanceof FormData?{}:{"content-type":"application/json"}),...(headers||{})}};if(body!==undefined)opts.body=body instanceof FormData?body:JSON.stringify(body);const r=await fetch(url,opts);const ct=r.headers.get("content-type")||"";const data=ct.includes("application/json")?await r.json():{text:await r.text()};return {ok:r.ok,status:r.status,...data}}catch(e){return{ok:false,error:e.message||"Network error"}}}
+
+async function loadChats(){
+  const r=await api("/api/chats"); if(!r.ok)return;
+  state.chats=r.chats||[]; renderChats(els.chatSearch.value);
+  populateScheduleChatOptions();
+}
+function renderChats(query=""){
+  const q=String(query||"").trim().toLowerCase();
+  const visible=q?state.chats.filter(c=>(c.title||"").toLowerCase().includes(q)):state.chats;
+  const pinned=visible.filter(c=>c.pinned), recent=visible.filter(c=>!c.pinned);
+  els.pinnedSection.classList.toggle("hidden",!pinned.length);
+  els.pinnedChatList.innerHTML=""; els.recentChatList.innerHTML="";
+  for(const c of pinned) els.pinnedChatList.appendChild(makeChatRow(c,true));
+  for(const c of recent) els.recentChatList.appendChild(makeChatRow(c,false));
+  if(!visible.length) els.recentChatList.innerHTML='<div class="empty-sidebar">No conversations found.</div>';
+}
+function makeChatRow(c,pinned=false){
+  const row=document.createElement("div"); row.className=`chat-row ${state.currentChat?.id===c.id?"active":""}`; row.dataset.id=c.id;
+  row.innerHTML=`<button class="chat-open">${pinned?'<span class="chat-pin">◆</span>':""}${escapeHtml(c.title)}</button><button class="chat-more" aria-label="Conversation options">•••</button>`;
+  const open=row.querySelector(".chat-open"); open.onclick=()=>openChat(c.id); open.onpointerenter=()=>prefetchChat(c.id); open.onpointerdown=()=>prefetchChat(c.id);
+  row.querySelector(".chat-more").onclick=e=>{e.stopPropagation();showChatMenu(row,c)};
+  return row;
+}
+async function prefetchChat(id){
+  if(state.chatCache.has(id))return;
+  const r=await api(`/api/chats/${id}`); if(r.ok)state.chatCache.set(id,{chat:r.chat,messages:r.messages||[],at:Date.now()});
+}
+function showChatMenu(row,c){
+  $$('.chat-menu').forEach(x=>x.remove()); const menu=document.createElement("div"); menu.className="chat-menu";
+  menu.innerHTML=`<button data-a="rename">Rename</button><button data-a="pin">${c.pinned?"Unpin":"Pin"}</button><button data-a="project">Move to project</button><button data-a="delete" class="danger-text">Delete</button>`;
+  menu.onclick=async e=>{const a=e.target.dataset.a;if(!a)return;if(a==="rename")await renameChat(c);if(a==="pin")await pinChat(c);if(a==="project")await moveChatToProject(c);if(a==="delete")await deleteChat(c);menu.remove()}; row.appendChild(menu)
+}
+async function newChat(focus=true,projectId=null){
+  if(state.generating)return toast("Stop the current response first.");
+  // Make the UI react immediately. The network-created chat is resolved in the background.
+  const previous={chat:state.currentChat,messages:state.messages,pending:state.pending};
+  state.currentChat={id:null,title:"New chat",pinned:0,auto_title:1,project_id:projectId||null,_pending:true};
+  state.messages=[]; state.pending=[]; renderAttachments(); renderMessages(); setWorkspaceHeading("New chat","CFocus 1.0");
+  switchView("chat"); closeSidebar(); requestAnimationFrame(()=>{if(focus)els.composer.focus()});
+  const create=api("/api/chats",{method:"POST",body:{...(projectId?{project_id:projectId}:{})}});
+  state.chatCreatePromise=create;
+  const r=await create;
+  if(state.chatCreatePromise===create)state.chatCreatePromise=null;
+  if(!r.ok){state.currentChat=previous.chat;state.messages=previous.messages;state.pending=previous.pending;renderAttachments();renderMessages();if(previous.chat)setWorkspaceHeading(previous.chat.title,"CFocus 1.0");toast(r.error||"Could not start a new chat","error");return null}
+  // Only replace the temporary chat if the user is still on it.
+  if(state.currentChat?._pending){state.currentChat=r.chat;state.chatCache.set(r.chat.id,{chat:r.chat,messages:[],at:Date.now()});}
+  if(!state.chats.some(c=>c.id===r.chat.id)){state.chats.unshift(r.chat);renderChats(els.chatSearch.value)}
+  return r.chat;
+}
+async function ensureCurrentChatReady(){
+  if(state.currentChat?.id)return state.currentChat;
+  if(state.chatCreatePromise){const r=await state.chatCreatePromise;if(r?.ok){state.currentChat=r.chat;return r.chat}}
+  return await newChat(false);
+}
+function applyChatData(chat,messages){
+  state.currentChat=chat; state.messages=messages||[]; state.pending=[]; renderAttachments(); renderMessages(); els.currentChatTitle.textContent=chat.title; renderChats(els.chatSearch.value); switchView("chat"); closeSidebar(); scrollBottom(false)
+}
+async function openChat(id){
+  if(state.generating){toast("Stop the current response before switching chats.");return}
+  const cached=state.chatCache.get(id); if(cached)applyChatData(cached.chat,cached.messages);
+  const r=await api(`/api/chats/${id}`); if(!r.ok){if(!cached)toast(r.error||"Could not open chat","error");return}
+  state.chatCache.set(id,{chat:r.chat,messages:r.messages||[],at:Date.now()}); applyChatData(r.chat,r.messages||[]); maybeRetitleExistingChat(r.chat,r.messages||[])
+}
+async function maybeRetitleExistingChat(chat,messages){const generic=/^(new chat|hello|hi|hey|question|conversation|file analysis)$/i.test((chat.title||"").trim());if(!chat.auto_title||!generic||(messages||[]).length<2)return;const r=await api(`/api/chats/${chat.id}/retitle`,{method:"POST",body:{}});if(r.ok&&r.chat){const i=state.chats.findIndex(c=>c.id===chat.id);if(i>=0)state.chats[i]={...state.chats[i],...r.chat};if(state.currentChat?.id===chat.id){state.currentChat={...state.currentChat,...r.chat};els.currentChatTitle.textContent=r.chat.title}renderChats(els.chatSearch.value)}}
+
+function renderMessages(){if(!state.messages.length){els.messageList.innerHTML="";return}els.messageList.innerHTML="";for(const m of state.messages){const node=document.createElement("article");node.className=`message message-${m.role}`;node.dataset.id=m.id;if(m.role==="user"){node.innerHTML=`<div class="message-files">${renderFileChips(m.attachments||[])}</div><div class="bubble">${escapeHtml(m.content||"")}</div><div class="message-actions"><button class="message-action" data-action="copy">Copy</button><button class="message-action" data-action="edit">Edit & resend</button></div>`}else{node.innerHTML=`<div class="assistant-icon"><span class="brand-mark"><i></i><b></b><span></span></span></div><div><div class="assistant-body">${m.status==="streaming"&&!m.content?typingHtml():renderMarkdown(m.content||"")}</div><div class="message-actions"><button class="message-action" data-action="copy">Copy</button><button class="message-action" data-action="regen">Regenerate</button></div></div>`}node.querySelectorAll("[data-action]").forEach(b=>b.onclick=()=>handleMessageAction(b.dataset.action,m));els.messageList.appendChild(node);wireCodeCopy(node)}}
+function renderFileChips(atts){return (atts||[]).map(a=>{const url=`/api/files/${encodeURIComponent(a.id)}`;if((a.mime_type||"").startsWith("image/"))return `<a class="file-chip" href="${url}" target="_blank"><img src="${url}" alt=""><span>${escapeHtml(a.filename)}</span></a>`;return `<a class="file-chip" href="${url}" target="_blank"><span class="file-icon">▤</span><span>${escapeHtml(a.filename)}</span></a>`}).join("")}
+function typingHtml(){return '<div class="typing"><i></i><i></i><i></i></div>'}
+function handleMessageAction(action,m){if(action==="copy")copyText(m.content||"");if(action==="edit")beginEdit(m);if(action==="regen")regenerate(m.parent_message_id)}
+function beginEdit(m){if(state.generating)return;const node=document.querySelector(`.message[data-id="${CSS.escape(m.id)}"]`);const bubble=node?.querySelector(".bubble");if(!bubble)return;const old=m.content||"";bubble.innerHTML=`<textarea class="edit-area" style="width:min(560px,70vw);min-height:110px;background:transparent;border:0;outline:none;resize:vertical;line-height:1.5">${escapeHtml(old)}</textarea><div style="display:flex;justify-content:flex-end;gap:6px;margin-top:8px"><button class="message-action cancel-edit">Cancel</button><button class="primary-btn save-edit" style="padding:7px 11px;font-size:11px">Save & resend</button></div>`;const ta=bubble.querySelector("textarea");ta.focus();bubble.querySelector(".cancel-edit").onclick=renderMessages;bubble.querySelector(".save-edit").onclick=async()=>{const content=ta.value.trim();if(!content)return;const r=await api(`/api/messages/${m.id}`,{method:"PATCH",body:{content}});if(!r.ok)return toast(r.error,"error");await streamRegenerate(m.id)}}
+async function regenerate(userMessageId){if(!userMessageId){const prev=[...state.messages].reverse().find(x=>x.role==="user");userMessageId=prev?.id}if(userMessageId)await streamRegenerate(userMessageId)}
+async function streamRegenerate(userMessageId){if(!state.currentChat||state.generating)return;const idx=state.messages.findIndex(x=>x.id===userMessageId);if(idx>=0)state.messages=state.messages.slice(0,idx+1);state.messages.push({id:"temp-assistant",role:"assistant",content:"",status:"streaming",parent_message_id:userMessageId,attachments:[]});renderMessages();scrollBottom();await runStream(`/api/chats/${state.currentChat.id}/regenerate`,{user_message_id:userMessageId,web_search:state.web,intelligence:state.intelligence})}
+
+async function sendMessage(){if(state.generating)return;const content=els.composer.value.trim();const ready=state.pending.filter(x=>x.status==="ready");const uploading=state.pending.some(x=>x.status==="uploading");if(uploading)return toast("A file is still uploading.");if(!content&&!ready.length)return;const chat=await ensureCurrentChatReady();if(!chat?.id)return;const optimistic={id:`temp-user-${Date.now()}`,role:"user",content,attachments:ready.map(x=>({id:x.id,filename:x.filename,mime_type:x.mime_type,size_bytes:x.size_bytes}))};state.messages.push(optimistic,{id:"temp-assistant",role:"assistant",content:"",status:"streaming",attachments:[]});els.composer.value="";autoGrow();renderMessages();scrollBottom();const ids=ready.map(x=>x.id);state.pending=[];renderAttachments();await runStream(`/api/chats/${chat.id}/messages`,{content,attachment_ids:ids,web_search:state.web,intelligence:state.intelligence})}
+async function runStream(url,body){state.generating=true;els.sendBtn.classList.add("hidden");els.stopBtn.classList.remove("hidden");state.controller=new AbortController();try{const r=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),signal:state.controller.signal});if(!r.ok){const e=await r.json().catch(()=>({error:"Generation failed"}));throw new Error(e.error||"Generation failed")}const reader=r.body.getReader(),decoder=new TextDecoder();let buf="",assistant=state.messages[state.messages.length-1];while(true){const {done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split("\n");buf=lines.pop()||"";for(const line of lines){if(!line.trim())continue;let evt;try{evt=JSON.parse(line)}catch{continue}if(evt.type==="start"){assistant.id=evt.message_id}else if(evt.type==="delta"){assistant.content=(assistant.content||"")+evt.delta;assistant.status="streaming";updateStreamingAssistant(assistant)}else if(evt.type==="error"){toast(evt.error||"Generation error","error")}else if(evt.type==="done"){assistant.status="complete";updateStreamingAssistant(assistant)}}} }catch(e){if(e.name!=="AbortError")toast(e.message||"Generation failed","error")}finally{state.generating=false;state.controller=null;els.sendBtn.classList.remove("hidden");els.stopBtn.classList.add("hidden");const id=state.currentChat?.id;if(id)await openChat(id);await loadChats();if(id){setTimeout(()=>refreshSmartTitle(id),900);setTimeout(()=>refreshSmartTitle(id),2400)}}}
+function updateStreamingAssistant(m){if(state.streamRenderQueued)return;state.streamRenderQueued=true;requestAnimationFrame(()=>{state.streamRenderQueued=false;const node=document.querySelector('.message-assistant:last-child .assistant-body');if(node){node.innerHTML=m.content?renderMarkdown(m.content):typingHtml();wireCodeCopy(node.closest(".message"));scrollBottom(false)}})}
+async function refreshSmartTitle(chatId){const r=await api(`/api/chats/${chatId}/meta`);if(!r.ok||!r.chat)return;const i=state.chats.findIndex(c=>c.id===chatId);if(i>=0)state.chats[i]={...state.chats[i],...r.chat};if(state.currentChat?.id===chatId){state.currentChat={...state.currentChat,...r.chat};els.currentChatTitle.textContent=r.chat.title}const cached=state.chatCache.get(chatId);if(cached)cached.chat={...cached.chat,...r.chat};renderChats(els.chatSearch.value)}
+function stopGeneration(){state.controller?.abort();state.generating=false;els.sendBtn.classList.remove("hidden");els.stopBtn.classList.add("hidden")}
+
+async function handleFiles(files){if(!files.length)return;const chat=await ensureCurrentChatReady();if(!chat?.id)return;for(const file of files.slice(0,10)){const temp={tempId:crypto.randomUUID(),filename:file.name,mime_type:file.type||mimeFromName(file.name),size_bytes:file.size,status:"uploading",localUrl:file.type.startsWith("image/")?URL.createObjectURL(file):null};state.pending.push(temp);renderAttachments();const fd=new FormData();fd.append("file",file);fd.append("chat_id",chat.id);const r=await api("/api/uploads",{method:"POST",body:fd});if(r.ok){Object.assign(temp,r.attachment,{status:"ready"})}else{temp.status="error";temp.error=r.error||"Upload failed";toast(`${file.name}: ${temp.error}`,"error")}renderAttachments()}els.fileInput.value="";els.cameraInput.value="";els.photoInput.value=""}
+function renderAttachments(){els.attachmentTray.innerHTML=state.pending.map((a,i)=>`<div class="pending-attachment">${a.localUrl?`<img src="${a.localUrl}" alt="">`:`<div class="pending-icon">▤</div>`}<div class="pending-copy"><strong>${escapeHtml(a.filename)}</strong><small>${a.status==="uploading"?"Uploading…":a.status==="ready"?formatBytes(a.size_bytes):"Upload failed"}</small></div><button data-remove="${i}">×</button></div>`).join("");els.attachmentTray.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{const i=Number(b.dataset.remove);const a=state.pending[i];if(a?.localUrl)URL.revokeObjectURL(a.localUrl);state.pending.splice(i,1);renderAttachments()})}
+function mimeFromName(name){const e=name.split(".").pop().toLowerCase();if(e==="pdf")return"application/pdf";if(e==="csv")return"text/csv";if(["txt","md"].includes(e))return"text/plain";return"application/octet-stream"}
+
+async function renameCurrentChat(){if(state.currentChat)renameChat(state.currentChat)}
+async function renameChat(c){const title=prompt("Rename this chat",c.title);if(title===null||!title.trim())return;const r=await api(`/api/chats/${c.id}`,{method:"PATCH",body:{title:title.trim()}});if(!r.ok)return toast(r.error,"error");if(state.currentChat?.id===c.id){state.currentChat=r.chat;els.currentChatTitle.textContent=r.chat.title}await loadChats()}
+async function pinCurrentChat(){if(state.currentChat)pinChat(state.currentChat)}
+async function pinChat(c){const r=await api(`/api/chats/${c.id}`,{method:"PATCH",body:{pinned:!c.pinned}});if(!r.ok)return toast(r.error,"error");if(state.currentChat?.id===c.id)state.currentChat=r.chat;await loadChats()}
+async function deleteCurrentChat(){if(state.currentChat)deleteChat(state.currentChat)}
+async function deleteChat(c){const ok=await confirmBox("Delete chat?",`“${c.title}” and its uploaded files will be permanently deleted.`);if(!ok)return;const r=await api(`/api/chats/${c.id}`,{method:"DELETE"});if(!r.ok)return toast(r.error,"error");state.chatCache.delete(c.id);if(state.currentChat?.id===c.id){state.currentChat=null;state.messages=[]}await loadChats();if(!state.currentChat){if(state.chats.length)await openChat(state.chats[0].id);else await newChat(false)}}
+
+function setWorkspaceHeading(title,subtitle=""){$("#currentChatTitle").textContent=title;$("#modelLabel").textContent=subtitle;$("#modelLabel").classList.toggle("hidden",!subtitle)}
+function switchView(view){
+  closeAccountPanel();state.view=view;
+  const map={chat:els.chatView,library:els.libraryView,projects:els.projectsView,scheduled:els.scheduledView,admin:els.adminView};
+  Object.entries(map).forEach(([k,el])=>el?.classList.toggle("hidden",k!==view));
+  $$('.hub-item').forEach(x=>x.classList.toggle("active",x.dataset.view===view));
+  $(".topbar-actions")?.classList.toggle("hidden",view!=="chat");
+  if(view==="projects"){ $("#projectDetail")?.classList.add("hidden"); $("#projectsGrid")?.classList.remove("hidden"); state.activeProject=null; }
+  if(view==="chat"){setWorkspaceHeading(state.currentChat?.title||"New chat","CFocus 1.0")}
+  if(view==="library"){setWorkspaceHeading("Library","");loadLibrary()}
+  if(view==="projects"){setWorkspaceHeading("Projects","");loadProjects()}
+  if(view==="scheduled"){setWorkspaceHeading("Scheduled","");loadSchedules()}
+  if(view==="admin"){setWorkspaceHeading("Admin Console","");loadAdmin()}
+  closeSidebar()
+}
+
+async function loadLibrary(q=""){
+  const r=await api(`/api/library${q?`?q=${encodeURIComponent(q)}`:""}`);if(!r.ok)return toast(r.error||"Could not load library","error");state.library=r.files||[];renderLibrary()
+}
+function renderLibrary(){
+  const grid=$("#libraryGrid"); if(!grid)return;
+  if(!state.library.length){grid.innerHTML='<div class="feature-empty"><strong>Your library is empty</strong><span>Images, PDFs and documents you use in chats will appear here.</span></div>';return}
+  grid.innerHTML=state.library.map(f=>{const image=(f.mime_type||"").startsWith("image/");return `<button class="library-card" data-file="${f.id}">${image?`<img src="/api/files/${encodeURIComponent(f.id)}" alt="">`:`<span class="library-file-icon">${fileGlyph(f.mime_type,f.filename)}</span>`}<span class="library-card-copy"><strong>${escapeHtml(f.filename)}</strong><small>${escapeHtml(f.chat_title||"Conversation")} · ${formatBytes(f.size_bytes)}</small><em>${formatDate(f.created_at)}</em></span></button>`}).join("");
+  grid.querySelectorAll("[data-file]").forEach(b=>b.onclick=()=>window.open(`/api/files/${encodeURIComponent(b.dataset.file)}`,"_blank","noopener"))
+}
+function fileGlyph(mime,name){const n=(name||"").toLowerCase();if(mime==="application/pdf"||n.endsWith(".pdf"))return"PDF";if(n.match(/\.(doc|docx|odt|rtf)$/))return"DOC";if(n.match(/\.(xls|xlsx|csv|tsv)$/))return"XLS";if(n.match(/\.(ppt|pptx)$/))return"PPT";return"FILE"}
+
+async function loadProjects(){const r=await api("/api/projects");if(!r.ok)return toast(r.error||"Could not load projects","error");state.projects=r.projects||[];renderProjects()}
+function renderProjects(){
+  const grid=$("#projectsGrid");if(!grid)return;
+  if(!state.projects.length){grid.innerHTML='<div class="feature-empty"><strong>No projects yet</strong><span>Create a project to keep related conversations together.</span></div>';return}
+  grid.innerHTML=state.projects.map(p=>`<button class="project-card" data-project="${p.id}"><span class="project-folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg></span><span><strong>${escapeHtml(p.name)}</strong><small>${Number(p.chat_count||0)} conversation${Number(p.chat_count||0)===1?"":"s"}</small></span><i>›</i></button>`).join("");
+  grid.querySelectorAll("[data-project]").forEach(b=>b.onclick=()=>openProject(b.dataset.project))
+}
+function toggleProjectCreate(show){$("#projectCreateBar").classList.toggle("hidden",!show);if(show){$("#projectNameInput").value="";setTimeout(()=>$("#projectNameInput").focus(),20)}}
+async function createProject(){const name=$("#projectNameInput").value.trim();if(!name)return toast("Enter a project name.","error");const r=await api("/api/projects",{method:"POST",body:{name}});if(!r.ok)return toast(r.error,"error");toggleProjectCreate(false);await loadProjects();toast("Project created")}
+async function openProject(id){
+  const r=await api(`/api/projects/${id}`);if(!r.ok)return toast(r.error,"error");state.activeProject=r.project;
+  const detail=$("#projectDetail");detail.classList.remove("hidden");$("#projectsGrid").classList.add("hidden");
+  detail.innerHTML=`<div class="project-detail-head"><button class="icon-btn project-back" aria-label="Back">←</button><div><h2>${escapeHtml(r.project.name)}</h2><p>${(r.chats||[]).length} conversations</p></div><button class="primary-btn compact-primary project-new-chat">New chat</button></div><div class="project-chat-list">${(r.chats||[]).length?(r.chats||[]).map(c=>`<button data-project-chat="${c.id}"><span>${escapeHtml(c.title)}</span><small>${formatDate(c.updated_at)}</small><i>›</i></button>`).join(""):'<div class="feature-empty"><strong>No conversations yet</strong><span>Start a chat inside this project.</span></div>'}</div><div class="project-detail-actions"><button class="secondary-btn project-rename">Rename</button><button class="danger-btn project-delete">Delete project</button></div>`;
+  detail.querySelector(".project-back").onclick=()=>{detail.classList.add("hidden");$("#projectsGrid").classList.remove("hidden");state.activeProject=null};
+  detail.querySelector(".project-new-chat").onclick=()=>newChat(true,id);
+  detail.querySelectorAll("[data-project-chat]").forEach(b=>b.onclick=()=>openChat(b.dataset.projectChat));
+  detail.querySelector(".project-rename").onclick=async()=>{const name=prompt("Rename project",r.project.name);if(!name?.trim())return;const x=await api(`/api/projects/${id}`,{method:"PATCH",body:{name:name.trim()}});if(!x.ok)return toast(x.error,"error");await loadProjects();await openProject(id)};
+  detail.querySelector(".project-delete").onclick=async()=>{const ok=await confirmBox("Delete project?","The project will be removed. Its conversations will stay in ChatFocus.");if(!ok)return;const x=await api(`/api/projects/${id}`,{method:"DELETE"});if(!x.ok)return toast(x.error,"error");detail.classList.add("hidden");$("#projectsGrid").classList.remove("hidden");state.activeProject=null;await loadProjects();await loadChats()}
+}
+async function moveChatToProject(c){
+  if(!state.projects.length)await loadProjects();
+  if(!state.projects.length){switchView("projects");toggleProjectCreate(true);return toast("Create a project first.")}
+  const options=state.projects.map((p,i)=>`${i+1}. ${p.name}`).join("\n");const answer=prompt(`Move “${c.title}” to a project:\n0. No project\n${options}`);if(answer===null)return;
+  const n=Number(answer);let projectId=null;if(n>0&&state.projects[n-1])projectId=state.projects[n-1].id;else if(n!==0)return toast("Choose a valid project number.","error");
+  const r=await api(`/api/chats/${c.id}`,{method:"PATCH",body:{project_id:projectId}});if(!r.ok)return toast(r.error,"error");toast(projectId?"Moved to project":"Removed from project");await loadChats();if(state.view==="projects")await loadProjects()
+}
+
+function toggleScheduleForm(show){$("#scheduleForm").classList.toggle("hidden",!show);if(show){populateScheduleChatOptions();const d=new Date(Date.now()+60*60*1000);d.setMinutes(Math.ceil(d.getMinutes()/15)*15,0,0);$("#scheduleRunAt").value=toLocalInputValue(d);setTimeout(()=>$("#schedulePrompt").focus(),20)}}
+function populateScheduleChatOptions(){const sel=$("#scheduleChatSelect");if(!sel)return;const current=sel.value;sel.innerHTML='<option value="">Create a new conversation</option>'+state.chats.slice(0,100).map(c=>`<option value="${c.id}">${escapeHtml(c.title)}</option>`).join("");if([...sel.options].some(o=>o.value===current))sel.value=current}
+async function createSchedule(){const promptText=$("#schedulePrompt").value.trim(),run=$("#scheduleRunAt").value,frequency=$("#scheduleFrequency").value,chat_id=$("#scheduleChatSelect").value||null;if(!promptText||!run)return toast("Add a prompt and time.","error");const r=await api("/api/schedules",{method:"POST",body:{prompt:promptText,run_at:new Date(run).toISOString(),frequency,chat_id}});if(!r.ok)return toast(r.error,"error");$("#schedulePrompt").value="";toggleScheduleForm(false);await loadSchedules();await loadChats();toast("Scheduled")}
+async function loadSchedules(){const r=await api("/api/schedules");if(!r.ok)return toast(r.error||"Could not load schedules","error");state.schedules=r.schedules||[];renderSchedules()}
+function renderSchedules(){const list=$("#scheduleList");if(!list)return;if(!state.schedules.length){list.innerHTML='<div class="feature-empty"><strong>Nothing scheduled</strong><span>Create a prompt to run later, daily, or weekly.</span></div>';return}list.innerHTML=state.schedules.map(t=>`<article class="schedule-card ${t.enabled?"":"disabled"}"><div class="schedule-time"><strong>${formatDateTime(t.next_run_at)}</strong><span>${t.frequency==="once"?"One time":t.frequency[0].toUpperCase()+t.frequency.slice(1)}</span></div><div class="schedule-copy"><strong>${escapeHtml(t.prompt)}</strong><small>${escapeHtml(t.chat_title||"Scheduled conversation")}${t.last_error?` · Last run had an error`:""}</small></div><div class="schedule-card-actions"><button data-toggle-schedule="${t.id}" data-enabled="${t.enabled}">${t.enabled?"Pause":"Resume"}</button><button data-open-schedule-chat="${t.chat_id}">Open chat</button><button data-delete-schedule="${t.id}" class="danger-text">Delete</button></div></article>`).join("");list.querySelectorAll("[data-toggle-schedule]").forEach(b=>b.onclick=async()=>{const r=await api(`/api/schedules/${b.dataset.toggleSchedule}`,{method:"PATCH",body:{enabled:b.dataset.enabled!=="1"}});if(!r.ok)return toast(r.error,"error");loadSchedules()});list.querySelectorAll("[data-open-schedule-chat]").forEach(b=>b.onclick=()=>openChat(b.dataset.openScheduleChat));list.querySelectorAll("[data-delete-schedule]").forEach(b=>b.onclick=async()=>{const ok=await confirmBox("Delete schedule?","This scheduled prompt will stop running.");if(!ok)return;await api(`/api/schedules/${b.dataset.deleteSchedule}`,{method:"DELETE"});loadSchedules()})}
+function toLocalInputValue(d){const x=new Date(d.getTime()-d.getTimezoneOffset()*60000);return x.toISOString().slice(0,16)}
+function formatDateTime(v){if(!v)return"—";const d=new Date(String(v).replace(" ","T")+"Z");return Number.isNaN(d.getTime())?v:d.toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}
+
+async function loadAdmin(){if(state.user?.role!=="admin")return;const [s,set]=await Promise.all([api("/api/admin/stats"),api("/api/admin/settings")]);if(s.ok)renderStats(s.stats);if(set.ok)renderAdminSettings(set);await loadAdminUsers()}
+function renderStats(s){const cards=[['Users',s.users],['Chats',s.chats],['Messages',s.messages],['Files',s.files],['Tokens',formatNumber(s.total_tokens||0)]];$("#statsGrid").innerHTML=cards.map(([k,v])=>`<div class="stat-card"><small>${k}</small><strong>${typeof v==="number"?formatNumber(v):v}</strong></div>`).join("")}
+async function loadAdminUsers(){if(state.user?.role!=="admin")return;const q=$("#adminUserSearch").value.trim();const r=await api(`/api/admin/users${q?`?q=${encodeURIComponent(q)}`:""}`);if(!r.ok)return;$("#usersTable").innerHTML=(r.users||[]).map(u=>`<tr><td><strong>${escapeHtml(u.name)}</strong><small>${escapeHtml(u.email)}</small></td><td><span class="pill">${u.role}</span></td><td><span class="pill ${u.status==="active"?"good":"bad"}">${u.status}</span></td><td>${formatDate(u.last_seen_at||u.created_at)}</td><td><button class="table-action" data-user="${u.id}" data-status="${u.status}">${u.status==="active"?"Suspend":"Activate"}</button> <button class="table-action" data-role-user="${u.id}" data-role="${u.role}">${u.role==="admin"?"Make user":"Make admin"}</button></td></tr>`).join("");$("#usersTable").querySelectorAll("[data-user]").forEach(b=>b.onclick=()=>adminPatchUser(b.dataset.user,{status:b.dataset.status==="active"?"suspended":"active"}));$("#usersTable").querySelectorAll("[data-role-user]").forEach(b=>b.onclick=()=>adminPatchUser(b.dataset.roleUser,{role:b.dataset.role==="admin"?"user":"admin"}))}
+async function adminPatchUser(id,body){const r=await api(`/api/admin/users/${id}`,{method:"PATCH",body});if(!r.ok)return toast(r.error,"error");toast("User updated");await loadAdminUsers()}
+function renderAdminSettings(d){const s=d.settings||{};$("#adminModel").value=d.model||"gpt-6-luna";$("#adminSystemPrompt").value=s.system_prompt||"";$("#adminSignups").checked=s.signups_enabled!=="false";$("#adminMemory").checked=s.memory_enabled!=="false";$("#adminWeb").checked=s.web_search_enabled==="true";$("#adminImageDetail").value=s.image_detail||"auto";$("#adminPins").value=s.max_pins||5}
+async function saveAdminSettings(){const body={system_prompt:$("#adminSystemPrompt").value,signups_enabled:$("#adminSignups").checked,memory_enabled:$("#adminMemory").checked,web_search_enabled:$("#adminWeb").checked,image_detail:$("#adminImageDetail").value,max_pins:Number($("#adminPins").value||5)};const r=await api("/api/admin/settings",{method:"PUT",body});if(!r.ok)return toast(r.error,"error");toast("Settings saved");const me=await api("/api/me");if(me.ok){state.settings=me.settings;els.webToggle.classList.toggle("hidden",!state.settings.web_search_enabled)}}
+
+async function logout(){await api("/api/auth/logout",{method:"POST",body:{}});location.reload()}
+async function toggleMyMemory(){const enabled=!state.user.memory_enabled;const r=await api("/api/me/memory",{method:"PATCH",body:{enabled}});if(!r.ok)return toast(r.error,"error");state.user.memory_enabled=enabled;syncAccountLabels();toast(`Memory turned ${enabled?"on":"off"}`)}
+function cycleTheme(){const seq=["system","dark","light"];state.theme=seq[(seq.indexOf(state.theme)+1)%seq.length];localStorage.setItem("chatfocus-theme",state.theme);applyTheme();syncAccountLabels()}
+function syncAccountLabels(){const mem=$("#memoryStateLabel"),theme=$("#themeStateLabel");if(mem)mem.textContent=state.user?.memory_enabled?"On":"Off";if(theme)theme.textContent=state.theme.charAt(0).toUpperCase()+state.theme.slice(1)}
+function applyTheme(){let t=state.theme;if(t==="system")t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";document.documentElement.dataset.theme=t}
+function openAccountPanel(){closeSidebar();syncAccountLabels();const q=$("#settingsSearch");if(q){q.value="";filterSettings()}els.accountPanel.classList.remove("hidden")}function closeAccountPanel(){els.accountPanel.classList.add("hidden")}
+function filterSettings(){const input=$("#settingsSearch");if(!input)return;const q=input.value.trim().toLowerCase();$$('[data-settings-search]').forEach(el=>{const hay=(el.dataset.settingsSearch||"").toLowerCase();el.classList.toggle("settings-filtered",!!q&&!hay.includes(q))});$$('[data-settings-section]').forEach(group=>{const visible=[...group.querySelectorAll('[data-settings-search]')].some(el=>!el.classList.contains("settings-filtered"));group.classList.toggle("settings-empty",!visible);const title=group.previousElementSibling;if(title?.classList.contains("settings-section-title"))title.classList.toggle("settings-empty",!visible)});const admin=$("#accountAdminSection");if(admin&&!admin.classList.contains("hidden")){const group=admin.querySelector('[data-settings-section]');const visible=group&&![...group.querySelectorAll('[data-settings-search]')].every(el=>el.classList.contains("settings-filtered"));admin.classList.toggle("settings-search-empty",!visible)}}
+function openSidebar(){els.sidebar.classList.add("open");els.sidebarBackdrop.classList.add("show")}function closeSidebar(){els.sidebar.classList.remove("open");els.sidebarBackdrop.classList.remove("show")}
+
+function toggleAttachMenu(force){const shouldOpen=force===undefined?els.attachMenu.classList.contains("hidden"):!!force;els.attachMenu.classList.toggle("hidden",!shouldOpen);els.attachMenuBtn.setAttribute("aria-expanded",String(shouldOpen));if(shouldOpen)syncIntelligenceUI()}
+function closeAttachMenu(){els.attachMenu.classList.add("hidden");els.attachMenuBtn.setAttribute("aria-expanded","false")}
+function handleAttachMenuAction(e){const btn=e.target.closest("[data-attach-action]");if(!btn)return;const action=btn.dataset.attachAction;if(action==="camera"){closeAttachMenu();els.cameraInput.click();return}if(action==="photos"){closeAttachMenu();els.photoInput.click();return}if(action==="files"){closeAttachMenu();els.fileInput.click();return}if(action==="intelligence"){setIntelligence(!state.intelligence);closeAttachMenu();toast(`Intelligence ${state.intelligence?"on":"off"}`)}}
+function setIntelligence(on){state.intelligence=!!on;localStorage.setItem("chatfocus-intelligence",String(state.intelligence));syncIntelligenceUI();document.documentElement.dataset.intelligence=state.intelligence?"on":"off"}
+function setWebSearch(on,{silent=false,persist=true}={}){state.web=!!on;if(persist)localStorage.setItem("chatfocus-web",String(state.web));syncWebUI();if(!silent)toast(`Web search ${state.web?"on":"off"}`)}
+function syncWebUI(){const btn=els.webToggle;if(!btn)return;document.documentElement.dataset.web=state.web?"on":"off";btn.classList.toggle("active",state.web);btn.setAttribute("aria-pressed",String(state.web));btn.setAttribute("aria-label",state.web?"Web search on. Tap to turn it off.":"Turn on web search");btn.title=state.web?"Web search is on":"Use live web search";const label=btn.querySelector("span:last-child");if(label)label.textContent="Web"}
+function syncIntelligenceUI(){const btn=$("#intelligenceToggle"),label=$("#intelligenceState"),active=$("#intelligenceActiveBtn");document.documentElement.dataset.intelligence=state.intelligence?"on":"off";if(!btn||!label)return;btn.classList.toggle("active",state.intelligence);btn.setAttribute("aria-checked",String(state.intelligence));label.textContent=state.intelligence?"On":"Off";els.attachMenuBtn.classList.toggle("intelligence-on",state.intelligence);if(active){active.classList.toggle("hidden",!state.intelligence);active.setAttribute("aria-pressed",String(state.intelligence))}}
+
+function setDictationUI(on){state.dictating=!!on;const btn=$("#micBtn");if(!btn)return;btn.classList.toggle("listening",state.dictating);btn.setAttribute("aria-pressed",String(state.dictating));btn.setAttribute("aria-label",state.dictating?"Stop dictation":"Start dictation");btn.title=state.dictating?"Stop dictation":"Dictate"}
+function toggleDictation(){if(state.dictating&&state.recognition){state.recognition.stop();return}const R=window.SpeechRecognition||window.webkitSpeechRecognition;if(!R){els.composer.focus();return toast("Microphone dictation is not supported by this browser. You can still use your keyboard microphone.","error")}const rec=new R();state.recognition=rec;rec.lang=navigator.language||"en-US";rec.interimResults=true;rec.continuous=true;const base=els.composer.value.trimEnd();rec.onstart=()=>setDictationUI(true);rec.onresult=e=>{let text="";for(let i=e.resultIndex;i<e.results.length;i++)text+=e.results[i][0].transcript;els.composer.value=(base+(base?" ":"")+text).trimStart();autoGrow();els.composer.focus()};rec.onerror=e=>{if(e.error!=="aborted"&&e.error!=="no-speech")toast("Dictation stopped. Please try again.","error")};rec.onend=()=>{state.recognition=null;setDictationUI(false)};try{rec.start()}catch{state.recognition=null;setDictationUI(false);toast("Could not start the microphone.","error")}}
+function autoGrow(){els.composer.style.height="auto";els.composer.style.height=Math.min(190,els.composer.scrollHeight)+"px"}
+function scrollBottom(smooth=true){requestAnimationFrame(()=>els.messagesScroller.scrollTo({top:els.messagesScroller.scrollHeight,behavior:smooth?"smooth":"auto"}))}
+
+function renderMarkdown(raw){if(!raw)return"";const blocks=[],links=[];let text=String(raw).replace(/```([^\n]*)\n?([\s\S]*?)```/g,(_,lang,code)=>{const token=`@@CODE${blocks.length}@@`;blocks.push(`<div class="code-wrap"><div class="code-head"><span>${escapeHtml(lang.trim()||"code")}</span><button class="copy-code">Copy</button></div><pre><code>${escapeHtml(code.replace(/\n$/,""))}</code></pre></div>`);return token});text=text.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,(_,label,url)=>{const token=`@@LINK${links.length}@@`;links.push({label,url});return token});text=escapeHtml(text);const lines=text.split("\n");let html="",inUl=false,inOl=false;const close=()=>{if(inUl){html+="</ul>";inUl=false}if(inOl){html+="</ol>";inOl=false}};for(let line of lines){if(/^@@CODE\d+@@$/.test(line.trim())){close();html+=line.trim();continue}if(/^###\s+/.test(line)){close();html+=`<h3>${inlineMd(line.replace(/^###\s+/,""))}</h3>`;continue}if(/^##\s+/.test(line)){close();html+=`<h2>${inlineMd(line.replace(/^##\s+/,""))}</h2>`;continue}if(/^#\s+/.test(line)){close();html+=`<h1>${inlineMd(line.replace(/^#\s+/,""))}</h1>`;continue}if(/^[-*]\s+/.test(line)){if(!inUl){close();html+="<ul>";inUl=true}html+=`<li>${inlineMd(line.replace(/^[-*]\s+/,""))}</li>`;continue}if(/^\d+\.\s+/.test(line)){if(!inOl){close();html+="<ol>";inOl=true}html+=`<li>${inlineMd(line.replace(/^\d+\.\s+/,""))}</li>`;continue}close();if(line.trim())html+=`<p>${inlineMd(line)}</p>`;else html+="<br>"}close();blocks.forEach((b,i)=>html=html.replace(`@@CODE${i}@@`,b));links.forEach((l,i)=>{const href=escapeHtml(cleanLinkUrl(l.url));const label=escapeHtml(l.label);html=html.replaceAll(`@@LINK${i}@@`,`<a class="assistant-link" href="${href}" target="_blank" rel="noopener noreferrer">${label}<span class="external-link-mark" aria-hidden="true">↗</span></a>`)});return html}
+function inlineMd(s){return s.replace(/`([^`]+)`/g,"<code>$1</code>").replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>").replace(/\*([^*]+)\*/g,"<em>$1</em>")}
+function cleanLinkUrl(raw){try{const u=new URL(raw);["utm_source","utm_medium","utm_campaign","utm_term","utm_content","utm_name"].forEach(k=>u.searchParams.delete(k));return u.toString()}catch{return raw}}
+function wireCodeCopy(root){root?.querySelectorAll(".copy-code").forEach(b=>b.onclick=()=>copyText(b.closest(".code-wrap").querySelector("code").textContent))}
+function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+async function copyText(t){try{await navigator.clipboard.writeText(t);toast("Copied")}catch{toast("Could not copy","error")}}
+function debounce(fn,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms)}}
+function formatBytes(n){n=Number(n||0);if(n<1024)return`${n} B`;if(n<1048576)return`${(n/1024).toFixed(1)} KB`;return`${(n/1048576).toFixed(1)} MB`}
+function formatNumber(n){return new Intl.NumberFormat().format(Number(n||0))}
+function formatDate(v){if(!v)return"—";const d=new Date(String(v).replace(" ","T")+(/[zZ]|[+-]\d\d:?\d\d$/.test(v)?"":"Z"));return Number.isNaN(d.getTime())?v:d.toLocaleDateString(undefined,{month:"short",day:"numeric",year:"2-digit"})}
+function setButtonBusy(btn,busy){btn.disabled=busy;btn.style.opacity=busy?.65:1}
+function toast(msg,type="ok"){const x=document.createElement("div");x.className=`toast ${type}`;x.textContent=msg;$("#toastHost").appendChild(x);setTimeout(()=>x.remove(),3000)}
+function confirmBox(title,text){return new Promise(resolve=>{const modal=$("#confirmModal");$("#confirmTitle").textContent=title;$("#confirmText").textContent=text;modal.classList.remove("hidden");const ok=$("#confirmOk");const finish=v=>{modal.classList.add("hidden");ok.onclick=null;window.__confirmResolve=null;resolve(v)};ok.onclick=()=>finish(true);window.__confirmResolve=finish})}
+function closeConfirm(v){window.__confirmResolve?.(v)}
