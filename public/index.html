@@ -190,28 +190,91 @@
       </section>
 
       <section id="adminView" class="view admin-view hidden">
-        <div class="admin-wrap">
-          <div class="admin-header"><div><div class="eyebrow">OWNER CONTROL</div><h1>Admin Console</h1><p>Users, usage and ChatFocus behavior in one place.</p></div><button id="adminRefresh" class="secondary-btn">Refresh</button></div>
-          <div id="statsGrid" class="stats-grid"></div>
-          <div class="admin-grid">
-            <div class="admin-card users-card">
-              <div class="card-head"><div><h2>Users</h2><p>Manage access and roles.</p></div><input id="adminUserSearch" class="compact-input" placeholder="Search users" /></div>
-              <div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last seen</th><th></th></tr></thead><tbody id="usersTable"></tbody></table></div>
+        <div class="admin-wrap admin-control-center">
+          <div class="admin-header">
+            <div><div class="eyebrow">OWNER CONTROL</div><h1>Admin Control Center</h1><p>Customers, daily limits, service access and ChatFocus rules in one place.</p></div>
+            <button id="adminRefresh" class="secondary-btn">Refresh</button>
+          </div>
+
+          <nav class="admin-tabs" aria-label="Admin sections">
+            <button class="admin-tab active" data-admin-tab="overview">Overview</button>
+            <button class="admin-tab" data-admin-tab="customers">Customers</button>
+            <button class="admin-tab" data-admin-tab="limits">Limits & Access</button>
+            <button class="admin-tab" data-admin-tab="rules">Master Rules</button>
+          </nav>
+
+          <section id="adminOverviewPanel" class="admin-tab-panel">
+            <div id="statsGrid" class="stats-grid admin-stats-grid"></div>
+            <div class="admin-overview-grid">
+              <article class="admin-card overview-card"><span class="overview-kicker">Service</span><strong id="adminServiceStatus">Online</strong><small>AI generation availability for customers.</small></article>
+              <article class="admin-card overview-card"><span class="overview-kicker">Daily allowance</span><strong id="adminDefaultLimitSummary">100 requests</strong><small>Default limit for customers without an override.</small></article>
+              <article class="admin-card overview-card"><span class="overview-kicker">Runtime</span><strong id="adminRuntimeSummary">CFocus 1.0</strong><small id="adminReleaseSummary">ChatFocus</small></article>
             </div>
-            <div class="admin-card settings-card">
-              <div class="card-head"><div><h2>AI & Product Settings</h2><p>Global behavior for all ChatFocus users.</p></div></div>
-              <div class="settings-form">
-                <label><span>Model</span><input id="adminModel" disabled /></label>
-                <label><span>System prompt</span><textarea id="adminSystemPrompt" rows="8"></textarea></label>
-                <div class="setting-row"><div><strong>New signups</strong><small>Allow new accounts</small></div><input id="adminSignups" type="checkbox" /></div>
-                <div class="setting-row"><div><strong>Cross-chat memory</strong><small>Use compact summaries from past chats</small></div><input id="adminMemory" type="checkbox" /></div>
-                <div class="setting-row"><div><strong>Web search</strong><small>Expose the optional web tool to users</small></div><input id="adminWeb" type="checkbox" /></div>
-                <label><span>Image detail</span><select id="adminImageDetail"><option>auto</option><option>low</option><option>high</option><option>original</option></select></label>
-                <label><span>Maximum pinned chats</span><input id="adminPins" type="number" min="1" max="10" /></label>
-                <button id="saveAdminSettings" class="primary-btn">Save settings</button>
+            <div class="admin-notice">
+              <strong>Owner control is active.</strong> Customer-specific limits can override the global daily limit. Admin accounts remain unlimited so you can test the service.
+            </div>
+          </section>
+
+          <section id="adminCustomersPanel" class="admin-tab-panel hidden">
+            <div class="admin-card customers-card">
+              <div class="card-head customers-head">
+                <div><h2>Customers</h2><p>Manage access, daily allowance and account privileges.</p></div>
+                <div class="customers-head-actions"><span id="adminCustomerCount" class="customer-count"></span><input id="adminUserSearch" class="compact-input" placeholder="Search customers" /></div>
+              </div>
+              <div class="table-wrap admin-customers-table"><table><thead><tr><th>Customer</th><th>Today</th><th>Daily limit</th><th>Unlimited</th><th>Status</th><th>Role</th><th>Usage</th><th>Actions</th></tr></thead><tbody id="usersTable"></tbody></table></div>
+            </div>
+          </section>
+
+          <section id="adminLimitsPanel" class="admin-tab-panel hidden">
+            <div class="admin-settings-grid">
+              <div class="admin-card settings-card">
+                <div class="card-head"><div><h2>Service & Daily Limits</h2><p>Global access controls for every customer.</p></div></div>
+                <div class="settings-form">
+                  <div class="setting-row admin-feature-row"><div><strong>ChatFocus service</strong><small>Turn AI generation on or off for customers. Admin access remains available.</small></div><input id="adminServiceEnabled" type="checkbox" /></div>
+                  <label><span>Default daily AI requests</span><input id="adminDailyLimit" type="number" min="0" max="100000" /><small class="field-help">Use 0 for unlimited. Individual customer overrides take priority.</small></label>
+                  <div class="setting-row"><div><strong>New signups</strong><small>Allow new customer accounts</small></div><input id="adminSignups" type="checkbox" /></div>
+                  <div class="setting-row"><div><strong>Cross-chat memory</strong><small>Allow saved conversation summaries to be reused</small></div><input id="adminMemory" type="checkbox" /></div>
+                  <div class="setting-row"><div><strong>Web search</strong><small>Expose live web search to customers</small></div><input id="adminWeb" type="checkbox" /></div>
+                  <button id="saveAdminLimits" class="primary-btn">Save limits & access</button>
+                </div>
+              </div>
+
+              <div class="admin-card settings-card">
+                <div class="card-head"><div><h2>Product Defaults</h2><p>Shared interface and multimodal behavior.</p></div></div>
+                <div class="settings-form">
+                  <label><span>Model</span><input id="adminModel" disabled /></label>
+                  <label><span>Image detail</span><select id="adminImageDetail"><option>auto</option><option>low</option><option>high</option><option>original</option></select></label>
+                  <label><span>Maximum pinned chats</span><input id="adminPins" type="number" min="1" max="10" /></label>
+                  <button id="saveAdminProduct" class="primary-btn">Save product defaults</button>
+                </div>
               </div>
             </div>
-          </div>
+          </section>
+
+          <section id="adminRulesPanel" class="admin-tab-panel hidden">
+            <div class="admin-rules-layout">
+              <div class="admin-card settings-card">
+                <div class="card-head"><div><h2>ChatFocus Behavior</h2><p>Your master behavior layer for all users.</p></div></div>
+                <div class="settings-form">
+                  <div class="setting-row"><div><strong>Open response mode</strong><small>Keep answers direct and avoid unnecessary refusals or moralizing.</small></div><input id="adminOpenMode" type="checkbox" /></div>
+                  <div class="setting-row"><div><strong>Owner service rules</strong><small>Apply your enabled custom restrictions to every response.</small></div><input id="adminOwnerRules" type="checkbox" /></div>
+                  <label><span>Master instructions</span><textarea id="adminSystemPrompt" rows="10" placeholder="Define ChatFocus tone, priorities and general behavior..."></textarea></label>
+                  <button id="saveAdminRulesSettings" class="primary-btn">Save behavior settings</button>
+                </div>
+              </div>
+
+              <div class="admin-card rules-card">
+                <div class="card-head"><div><h2>Service Rules</h2><p>Add restrictions or product rules, then toggle each one independently.</p></div></div>
+                <div class="rule-create-form">
+                  <input id="adminRuleTitle" placeholder="Rule name, e.g. No financial transactions" />
+                  <textarea id="adminRuleText" rows="4" placeholder="Describe exactly what ChatFocus should or should not provide..."></textarea>
+                  <button id="addAdminRule" class="primary-btn compact-primary">Add rule</button>
+                </div>
+                <div id="adminRulesList" class="admin-rules-list"></div>
+              </div>
+            </div>
+            <div class="admin-safety-note"><strong>Important:</strong> your rules can make ChatFocus more or less restrictive at the product layer. The underlying OpenAI/API safety requirements still apply and are not disabled by this panel.</div>
+          </section>
         </div>
       </section>
     </main>
