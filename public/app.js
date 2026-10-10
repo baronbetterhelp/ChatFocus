@@ -2,7 +2,8 @@ const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const state = {
   user:null, settings:null, chats:[], currentChat:null, messages:[], pending:[], generating:false,
-  controller:null, authMode:"login", view:"chat", web:false, intelligence:localStorage.getItem("chatfocus-intelligence")==="true", theme:localStorage.getItem("chatfocus-theme")||"system"
+  controller:null, authMode:"login", view:"chat", web:false, intelligence:localStorage.getItem("chatfocus-intelligence")==="true", theme:localStorage.getItem("chatfocus-theme")||"system",
+  recognition:null, dictating:false
 };
 
 const els = {
@@ -36,7 +37,8 @@ function bindEvents(){
   els.attachMenuBtn.addEventListener("click",e=>{e.stopPropagation();toggleAttachMenu()});
   els.attachMenu.addEventListener("click",handleAttachMenuAction);
   syncIntelligenceUI();
-  $("#micBtn").addEventListener("click",startDictation);
+  $("#micBtn").addEventListener("click",toggleDictation);
+  $("#intelligenceActiveBtn").addEventListener("click",()=>setIntelligence(false));
   els.webToggle.addEventListener("click",()=>{state.web=!state.web;els.webToggle.classList.toggle("active",state.web)});
   $("#renameChatBtn").addEventListener("click",renameCurrentChat); $("#pinChatBtn").addEventListener("click",pinCurrentChat); $("#deleteChatBtn").addEventListener("click",deleteCurrentChat);
   $("#accountBtn").addEventListener("click",openAccountPanel);
@@ -119,10 +121,12 @@ function openSidebar(){els.sidebar.classList.add("open");els.sidebarBackdrop.cla
 
 function toggleAttachMenu(force){const shouldOpen=force===undefined?els.attachMenu.classList.contains("hidden"):!!force;els.attachMenu.classList.toggle("hidden",!shouldOpen);els.attachMenuBtn.setAttribute("aria-expanded",String(shouldOpen));if(shouldOpen)syncIntelligenceUI()}
 function closeAttachMenu(){els.attachMenu.classList.add("hidden");els.attachMenuBtn.setAttribute("aria-expanded","false")}
-function handleAttachMenuAction(e){const btn=e.target.closest("[data-attach-action]");if(!btn)return;const action=btn.dataset.attachAction;if(action==="camera"){closeAttachMenu();els.cameraInput.click();return}if(action==="photos"){closeAttachMenu();els.photoInput.click();return}if(action==="files"){closeAttachMenu();els.fileInput.click();return}if(action==="intelligence"){state.intelligence=!state.intelligence;localStorage.setItem("chatfocus-intelligence",String(state.intelligence));syncIntelligenceUI();closeAttachMenu();toast(`Intelligence ${state.intelligence?"on":"off"}`)}}
-function syncIntelligenceUI(){const btn=$("#intelligenceToggle"),label=$("#intelligenceState");if(!btn||!label)return;btn.classList.toggle("active",state.intelligence);btn.setAttribute("aria-checked",String(state.intelligence));label.textContent=state.intelligence?"On":"Off";els.attachMenuBtn.classList.toggle("intelligence-on",state.intelligence)}
+function handleAttachMenuAction(e){const btn=e.target.closest("[data-attach-action]");if(!btn)return;const action=btn.dataset.attachAction;if(action==="camera"){closeAttachMenu();els.cameraInput.click();return}if(action==="photos"){closeAttachMenu();els.photoInput.click();return}if(action==="files"){closeAttachMenu();els.fileInput.click();return}if(action==="intelligence"){setIntelligence(!state.intelligence);closeAttachMenu();toast(`Intelligence ${state.intelligence?"on":"off"}`)}}
+function setIntelligence(on){state.intelligence=!!on;localStorage.setItem("chatfocus-intelligence",String(state.intelligence));syncIntelligenceUI()}
+function syncIntelligenceUI(){const btn=$("#intelligenceToggle"),label=$("#intelligenceState"),active=$("#intelligenceActiveBtn");if(!btn||!label)return;btn.classList.toggle("active",state.intelligence);btn.setAttribute("aria-checked",String(state.intelligence));label.textContent=state.intelligence?"On":"Off";els.attachMenuBtn.classList.toggle("intelligence-on",state.intelligence);if(active){active.classList.toggle("hidden",!state.intelligence);active.setAttribute("aria-pressed",String(state.intelligence))}}
 
-function startDictation(){const R=window.SpeechRecognition||window.webkitSpeechRecognition;if(!R)return toast("Speech dictation is not supported by this browser.");const rec=new R();rec.lang=navigator.language||"en-US";rec.interimResults=true;const base=els.composer.value;rec.onresult=e=>{let text="";for(let i=e.resultIndex;i<e.results.length;i++)text+=e.results[i][0].transcript;els.composer.value=(base+(base?" ":"")+text).trimStart();autoGrow()};rec.onerror=()=>toast("Dictation stopped.","error");rec.start()}
+function setDictationUI(on){state.dictating=!!on;const btn=$("#micBtn");if(!btn)return;btn.classList.toggle("listening",state.dictating);btn.setAttribute("aria-pressed",String(state.dictating));btn.setAttribute("aria-label",state.dictating?"Stop dictation":"Start dictation");btn.title=state.dictating?"Stop dictation":"Dictate"}
+function toggleDictation(){if(state.dictating&&state.recognition){state.recognition.stop();return}const R=window.SpeechRecognition||window.webkitSpeechRecognition;if(!R){els.composer.focus();return toast("Microphone dictation is not supported by this browser. You can still use your keyboard microphone.","error")}const rec=new R();state.recognition=rec;rec.lang=navigator.language||"en-US";rec.interimResults=true;rec.continuous=true;const base=els.composer.value.trimEnd();rec.onstart=()=>setDictationUI(true);rec.onresult=e=>{let text="";for(let i=e.resultIndex;i<e.results.length;i++)text+=e.results[i][0].transcript;els.composer.value=(base+(base?" ":"")+text).trimStart();autoGrow();els.composer.focus()};rec.onerror=e=>{if(e.error!=="aborted"&&e.error!=="no-speech")toast("Dictation stopped. Please try again.","error")};rec.onend=()=>{state.recognition=null;setDictationUI(false)};try{rec.start()}catch{state.recognition=null;setDictationUI(false);toast("Could not start the microphone.","error")}}
 function autoGrow(){els.composer.style.height="auto";els.composer.style.height=Math.min(190,els.composer.scrollHeight)+"px"}
 function scrollBottom(smooth=true){requestAnimationFrame(()=>els.messagesScroller.scrollTo({top:els.messagesScroller.scrollHeight,behavior:smooth?"smooth":"auto"}))}
 

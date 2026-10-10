@@ -118,7 +118,13 @@
                 <button id="webToggle" class="tool-btn hidden" type="button" title="Use web search for this message"><span>◎</span><span class="tool-label">Web</span></button>
               </div>
               <div class="composer-actions">
-                <button id="micBtn" class="round-btn" title="Dictate" aria-label="Dictate">⌁</button>
+                <button id="intelligenceActiveBtn" class="intelligence-active-btn hidden" type="button" title="Intelligence is on. Tap to turn it off." aria-label="Intelligence on">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 12 16.5 8.5M7 16h10"/></svg>
+                  <span>Intelligence</span>
+                </button>
+                <button id="micBtn" class="round-btn mic-btn" type="button" title="Dictate" aria-label="Start dictation" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7"/></svg>
+                </button>
                 <button id="sendBtn" class="send-btn" title="Send" aria-label="Send"><span>↑</span></button>
                 <button id="stopBtn" class="send-btn stop hidden" title="Stop" aria-label="Stop"><span>■</span></button>
               </div>
