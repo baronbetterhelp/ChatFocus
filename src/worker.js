@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.15";
+const CHATFOCUS_RELEASE = "V1.16";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -63,6 +63,7 @@ async function routeApi(request, env, ctx, url) {
   if (p === "/api/chats" && m === "GET") return listChats(env, user, url);
   if (p === "/api/chats" && m === "POST") return createChat(request, env, user);
   if (p === "/api/uploads" && m === "POST") return uploadFile(request, env, user);
+  if (p === "/api/uploads/batch" && m === "POST") return uploadFilesBatch(request, env, user);
   if (p.startsWith("/api/files/") && m === "GET") return getFile(env, user, decodeURIComponent(p.slice("/api/files/".length)));
 
   let match = p.match(/^\/api\/chats\/([^/]+)\/retitle$/);
@@ -387,6 +388,52 @@ async function uploadFile(request, env, user) {
   return json({ attachment: { id, filename: file.name, mime_type: file.type || "application/octet-stream", size_bytes: file.size, url: `/api/files/${id}` } }, 201);
 }
 
+
+async function uploadFilesBatch(request, env, user) {
+  const form = await request.formData();
+  const files = form.getAll("file").filter(x => x instanceof File);
+  const clientIds = form.getAll("client_id").map(String);
+  const chatId = String(form.get("chat_id") || "");
+  if (!files.length) return json({ error: "Choose one or more files to upload." }, 400);
+  if (files.length > 8) return json({ error: "Upload up to 8 files per batch." }, 400);
+  const chat = await getOwnedChat(env, user.id, chatId);
+  if (!chat) return json({ error: "Chat not found" }, 404);
+
+  const imageState = await getImageUploadState(env, user);
+  let imageUsed = imageState.used;
+  const results = [];
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const client_id = clientIds[i] || `file-${i}`;
+    try {
+      if (!acceptedFile(file)) { results.push({ client_id, ok:false, error:"This file type is not supported yet.", status:415 }); continue; }
+      const isImage = (file.type || "").startsWith("image/");
+      let maxMb = Number(env.MAX_UPLOAD_MB || 18);
+      if (isImage) {
+        if (!imageState.enabled && user.role !== "admin") { results.push({ client_id, ok:false, error:"Image uploads are currently disabled by the ChatFocus administrator.", status:403, code:"image_uploads_disabled" }); continue; }
+        if (!imageState.unlimited && imageUsed >= imageState.limit) { results.push({ client_id, ok:false, error:`You have reached today's image upload limit of ${imageState.limit}.`, status:429, code:"daily_image_limit_reached" }); continue; }
+        maxMb = imageState.max_mb;
+      }
+      if (file.size > maxMb * 1024 * 1024) { results.push({ client_id, ok:false, error:`${isImage ? "Each image" : "Each file"} must be ${maxMb} MB or smaller.`, status:413 }); continue; }
+
+      const id = crypto.randomUUID();
+      const safe = file.name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(-120) || "file";
+      const key = `${user.id}/${chatId}/${id}-${safe}`;
+      await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" }, customMetadata: { originalName: file.name } });
+      await env.DB.prepare("INSERT INTO attachments(id,user_id,chat_id,r2_key,filename,mime_type,size_bytes) VALUES(?,?,?,?,?,?,?)")
+        .bind(id,user.id,chatId,key,file.name,file.type || "application/octet-stream",file.size).run();
+      if (isImage) imageUsed++;
+      results.push({ client_id, ok:true, attachment:{ id, filename:file.name, mime_type:file.type || "application/octet-stream", size_bytes:file.size, url:`/api/files/${id}` } });
+    } catch (err) {
+      console.error("Batch upload file failed", file?.name, err);
+      results.push({ client_id, ok:false, error:"Upload failed. Please try again.", status:500 });
+    }
+  }
+
+  return json({ results, usage:{ ...imageState, used:imageUsed, remaining:imageState.unlimited ? null : Math.max(0, imageState.limit - imageUsed) } }, 207);
+}
+
 async function getFile(env, user, id) {
   const a = await env.DB.prepare("SELECT * FROM attachments WHERE id=? AND user_id=?").bind(id,user.id).first();
   if (!a) return json({ error: "File not found" }, 404);
@@ -399,7 +446,7 @@ async function createMessageAndStream(request, env, ctx, user, chatId) {
   const chat = await getOwnedChat(env,user.id,chatId); if (!chat) return json({ error: "Chat not found" }, 404);
   const body = await parseJson(request);
   const text = cleanText(body.content || "", 60000).trim();
-  const attachmentIds = Array.isArray(body.attachment_ids) ? body.attachment_ids.slice(0, Number(env.MAX_ATTACHMENTS || 10)).map(String) : [];
+  const attachmentIds = Array.isArray(body.attachment_ids) ? body.attachment_ids.slice(0, 50).map(String) : [];
   if (!text && !attachmentIds.length) return json({ error: "Write a message or attach a file." }, 400);
   if (attachmentIds.length) {
     const placeholders = attachmentIds.map(() => "?").join(",");
