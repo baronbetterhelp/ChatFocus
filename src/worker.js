@@ -1,3 +1,4 @@
+const CHATFOCUS_RELEASE = "V1.8";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -29,7 +30,7 @@ async function routeApi(request, env, ctx, url) {
   const p = url.pathname;
   const m = request.method.toUpperCase();
 
-  if (p === "/api/health") return json({ ok: true, app: env.APP_NAME || "ChatFocus", model: env.OPENAI_MODEL || "gpt-6-luna" });
+  if (p === "/api/health") return json({ ok: true, app: env.APP_NAME || "ChatFocus", version: CHATFOCUS_RELEASE, public_model: "CFocus 1.0", model: env.OPENAI_MODEL || "gpt-6-luna" });
   if (p === "/api/auth/signup" && m === "POST") return signup(request, env);
   if (p === "/api/auth/login" && m === "POST") return login(request, env);
   if (p === "/api/auth/logout" && m === "POST") return logout(request, env);
@@ -406,7 +407,7 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
       stream: true,
       store: false
     };
-    if (requestedWeb && webAllowed) payload.tools = [{ type: "web_search" }];
+    if (requestedWeb && webAllowed) { payload.tools = [{ type: "web_search" }]; payload.tool_choice = "required"; }
 
     const upstream = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -480,7 +481,7 @@ async function buildOpenAIContext(env, user, chatId, runtime = {}) {
   }
   const intelligenceOn = runtime.intelligence === true;
   const webOn = runtime.web === true;
-  const runtimeContext = `\n\nCurrent ChatFocus runtime state for THIS request:\n- App: ChatFocus\n- Public model identity: CFocus 1.0\n- Intelligence mode: ${intelligenceOn ? "ON" : "OFF"}\n- Web search requested: ${webOn ? "ON" : "OFF"}\n\nWhen the user asks whether Intelligence is on, enabled, active, or being used, answer directly from the runtime state above. In ChatFocus, “Intelligence” means the app's higher-reasoning mode; do not confuse it with Apple Intelligence or device settings. Never say you cannot know the Intelligence state when it is provided here.`;
+  const runtimeContext = `\n\nCurrent ChatFocus runtime state for THIS request:\n- App: ChatFocus\n- ChatFocus release: ${CHATFOCUS_RELEASE}\n- Public model identity: CFocus 1.0\n- Intelligence mode: ${intelligenceOn ? "ON" : "OFF"}\n- Live web search: ${webOn ? "ON" : "OFF"}\n\nUse this runtime state as authoritative for questions about ChatFocus itself. If the user asks what version/release/build they are currently using, answer “ChatFocus ${CHATFOCUS_RELEASE}” and, when useful, mention that the public model identity is CFocus 1.0. When the user asks whether Intelligence is on, enabled, active, or being used, answer directly from the runtime state above. In ChatFocus, “Intelligence” means the app's higher-reasoning mode; do not confuse it with Apple Intelligence or device settings. When Live web search is ON, use the web search tool for the request and make clear that current web information was used when relevant. Never say you cannot know a state that is explicitly provided here.`;
   const instructions = `${basePrompt}${memory}${runtimeContext}\n\nYou are operating inside ChatFocus. Never claim to be ChatGPT. If a user uploads a screenshot of a chat and asks for a reply, read the screenshot carefully and write the reply they can send. If a file is attached, inspect it before answering. Keep user privacy in mind.`;
 
   const rows = await env.DB.prepare("SELECT rowid AS seq,* FROM messages WHERE chat_id=? AND status<>'error' ORDER BY rowid DESC LIMIT 30").bind(chatId).all();
