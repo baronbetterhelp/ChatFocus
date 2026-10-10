@@ -34,3 +34,8 @@ For local development, copy `.dev.vars.example` to `.dev.vars`, add the API key,
 - Default model is `gpt-6-luna` and can be changed with the `OPENAI_MODEL` variable.
 - Uploaded files remain private in R2 and are retrieved by authenticated API routes only.
 - Cross-chat memory uses compact summaries generated from conversations and can be disabled per user or globally.
+
+
+## V1.1 — Responsive Conversation UI
+
+Replaces the static upload-focused landing screen with a full-height conversational interface. The composer stays at the bottom, image/file upload remains inside the composer, the mobile chat drawer fills the screen, and account/settings now opens as a full-screen panel. Includes the Cloudflare PBKDF2 100,000-iteration compatibility fix.
