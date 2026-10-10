@@ -1,10 +1,7 @@
-ChatFocus V1.15 Patch — Image Upload Controls
+ChatFocus V1.16 Patch — Reliable Multi-Image Uploads
 
-Upgrade from V1.14 by replacing/adding:
-- public/index.html
+For an existing V1.15 site, replace only:
 - public/app.js
 - src/worker.js
-- migrations/0005_image_upload_limits.sql
 
-Deploy normally:
-npm run db:remote && npx wrangler deploy
+No migration or wrangler.toml change is required.
