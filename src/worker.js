@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.16";
+const CHATFOCUS_RELEASE = "V1.17";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -143,7 +143,7 @@ async function getClientSettings(env) {
   return {
     memory_enabled: map.memory_enabled !== "false",
     web_search_enabled: map.web_search_enabled === "true",
-    image_detail: map.image_detail || "auto",
+    image_detail: map.image_detail || "low",
     max_pins: Number(map.max_pins || 5),
     service_enabled: map.service_enabled !== "false",
     daily_request_limit: Number(map.daily_request_limit || 100),
@@ -506,7 +506,7 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
       model: env.OPENAI_MODEL || "gpt-6-luna",
       instructions,
       input,
-      reasoning: { effort: requestedIntelligence ? "high" : "medium" },
+      reasoning: { effort: requestedIntelligence ? "high" : "low" },
       max_output_tokens: 12000,
       stream: true,
       store: false
@@ -606,17 +606,27 @@ async function buildOpenAIContext(env, user, chatId, runtime = {}) {
     const atts = await env.DB.prepare(`SELECT * FROM attachments WHERE message_id IN (${placeholders}) ORDER BY created_at ASC`).bind(...ids).all();
     for (const a of atts.results || []) (attMap[a.message_id] ||= []).push(a);
   }
-  const imageDetail = await getSetting(env,"image_detail","auto");
+  // Economy vision mode: only the CURRENT user turn sends binary attachments to OpenAI.
+  // Older images/files remain represented by the text conversation and prior assistant answers,
+  // so the same 20–50 pictures are not charged again on every follow-up message.
+  const imageDetail = await getSetting(env,"image_detail","low");
+  const latestUserWithAttachments = [...messages].reverse().find(m => m.role === "user" && (attMap[m.id] || []).length);
+  const latestUserMessage = [...messages].reverse().find(m => m.role === "user");
+  const currentAttachmentMessageId = latestUserWithAttachments?.id === latestUserMessage?.id ? latestUserMessage.id : null;
   const input = [];
   for (const m of messages) {
     if (m.role === "assistant") { input.push({ role:"assistant", content:m.content || "" }); continue; }
     if (m.role !== "user") continue;
     const content = [];
-    for (const a of attMap[m.id] || []) {
-      const obj = await env.FILES.get(a.r2_key); if (!obj) continue;
-      const bytes = new Uint8Array(await obj.arrayBuffer()); const data = `data:${a.mime_type};base64,${bytesToB64(bytes)}`;
-      if (IMAGE_MIMES.has(a.mime_type)) content.push({ type:"input_image", image_url:data, detail:imageDetail });
-      else content.push({ type:"input_file", filename:a.filename, file_data:data, ...(a.mime_type === "application/pdf" ? { detail:imageDetail } : {}) });
+    // Attachments are sent only for the newest user message that actually contains them.
+    // Historical attachments are deliberately NOT re-read on every request.
+    if (m.id === currentAttachmentMessageId) {
+      for (const a of attMap[m.id] || []) {
+        const obj = await env.FILES.get(a.r2_key); if (!obj) continue;
+        const bytes = new Uint8Array(await obj.arrayBuffer()); const data = `data:${a.mime_type};base64,${bytesToB64(bytes)}`;
+        if (IMAGE_MIMES.has(a.mime_type)) content.push({ type:"input_image", image_url:data, detail:imageDetail });
+        else content.push({ type:"input_file", filename:a.filename, file_data:data, ...(a.mime_type === "application/pdf" ? { detail:imageDetail } : {}) });
+      }
     }
     content.push({ type:"input_text", text:m.content || (content.length ? "Please analyze the attached file(s)." : "") });
     input.push({ role:"user", content });
