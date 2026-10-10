@@ -247,7 +247,7 @@
                 <div class="card-head"><div><h2>Product Defaults</h2><p>Shared interface and multimodal behavior.</p></div></div>
                 <div class="settings-form">
                   <label><span>Model</span><input id="adminModel" disabled /></label>
-                  <label><span>Image detail</span><select id="adminImageDetail"><option>auto</option><option>low</option><option>high</option><option>original</option></select></label>
+                  <label><span>Image analysis detail</span><select id="adminImageDetail"><option value="low">Low — economy (recommended)</option><option value="auto">Auto</option><option value="high">High</option><option value="original">Original — highest cost</option></select><small class="field-help">Low is the CallFocus-style default. Use higher detail only when very small visual details are essential.</small></label>
                   <label><span>Maximum pinned chats</span><input id="adminPins" type="number" min="1" max="10" /></label>
                   <button id="saveAdminProduct" class="primary-btn">Save product defaults</button>
                 </div>

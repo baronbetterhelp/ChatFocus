@@ -189,13 +189,29 @@ async function handleFiles(files){
   if(!files.length)return;
   const chat=await ensureCurrentChatReady(); if(!chat?.id)return;
   const selected=[...files];
-  const temps=selected.map(file=>({tempId:crypto.randomUUID(),file,filename:file.name,mime_type:file.type||mimeFromName(file.name),size_bytes:file.size,status:"uploading",localUrl:(file.type||"").startsWith("image/")?URL.createObjectURL(file):null}));
+  const temps=selected.map(file=>({tempId:crypto.randomUUID(),file,filename:file.name,mime_type:file.type||mimeFromName(file.name),size_bytes:file.size,status:(file.type||"").startsWith("image/")?"optimizing":"uploading",localUrl:(file.type||"").startsWith("image/")?URL.createObjectURL(file):null}));
   state.pending.push(...temps); renderAttachments();
   const batchSize=window.matchMedia("(max-width: 820px)").matches?4:6;
   for(let i=0;i<temps.length;i+=batchSize){
     const batch=temps.slice(i,i+batchSize);
+    // Match the low-cost CallFocus pipeline: optimize images one at a time so iPhone/Safari
+    // never decodes a large set of full-resolution photos in memory at once.
+    for(const temp of batch){
+      if((temp.file.type||"").startsWith("image/") && temp.file.type!=="image/gif"){
+        try{
+          const optimized=await optimizeImageForVision(temp.file,1600,.82);
+          if(optimized){
+            temp.uploadFile=optimized;
+            temp.uploadFilename=optimized.name;
+            temp.mime_type=optimized.type||temp.mime_type;
+            temp.size_bytes=optimized.size;
+          }
+        }catch(err){console.warn("Image optimization skipped",temp.filename,err)}
+      }
+      temp.status="uploading";renderAttachments();
+    }
     const fd=new FormData(); fd.append("chat_id",chat.id);
-    for(const temp of batch){ fd.append("file",temp.file,temp.filename); fd.append("client_id",temp.tempId); }
+    for(const temp of batch){ const sendFile=temp.uploadFile||temp.file; fd.append("file",sendFile,temp.uploadFilename||temp.filename); fd.append("client_id",temp.tempId); }
     let r=await api("/api/uploads/batch",{method:"POST",body:fd});
     if(r.status===401){
       const me=await api("/api/me");
@@ -214,13 +230,44 @@ async function handleFiles(files){
       const result=byId.get(temp.tempId);
       if(result?.ok&&result.attachment){Object.assign(temp,result.attachment,{status:"ready"})}
       else{temp.status="error";temp.error=result?.error||"Upload failed";toast(`${temp.filename}: ${temp.error}`,"error")}
-      delete temp.file;
+      delete temp.file;delete temp.uploadFile;
     }
     renderAttachments();
   }
   els.fileInput.value="";els.cameraInput.value="";els.photoInput.value="";
 }
-function renderAttachments(){els.attachmentTray.innerHTML=state.pending.map((a,i)=>`<div class="pending-attachment">${a.localUrl?`<img src="${a.localUrl}" alt="">`:`<div class="pending-icon">▤</div>`}<div class="pending-copy"><strong>${escapeHtml(a.filename)}</strong><small>${a.status==="uploading"?"Uploading…":a.status==="ready"?formatBytes(a.size_bytes):(a.error||"Upload failed")}</small></div><button data-remove="${i}">×</button></div>`).join("");els.attachmentTray.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{const i=Number(b.dataset.remove);const a=state.pending[i];if(a?.localUrl)URL.revokeObjectURL(a.localUrl);state.pending.splice(i,1);renderAttachments()})}
+
+async function optimizeImageForVision(file,maxEdge=1600,quality=.82){
+  if(!file||!(file.type||"").startsWith("image/")||file.type==="image/gif")return file;
+  let bitmap=null,img=null,url=null,width=0,height=0,drawSource=null;
+  try{
+    if("createImageBitmap" in window){
+      bitmap=await createImageBitmap(file);width=bitmap.width;height=bitmap.height;drawSource=bitmap;
+    }else{
+      url=URL.createObjectURL(file);img=new Image();img.decoding="async";await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=reject;img.src=url});width=img.naturalWidth;height=img.naturalHeight;drawSource=img;
+    }
+    if(!width||!height)return file;
+    const scale=Math.min(1,maxEdge/Math.max(width,height));
+    const targetW=Math.max(1,Math.round(width*scale)),targetH=Math.max(1,Math.round(height*scale));
+    // If it is already modest in dimensions and storage size, keep the original bytes.
+    if(scale===1&&file.size<=3*1024*1024)return file;
+    const canvas=document.createElement("canvas");canvas.width=targetW;canvas.height=targetH;
+    const ctx=canvas.getContext("2d",{alpha:false});if(!ctx)return file;
+    ctx.fillStyle="#fff";ctx.fillRect(0,0,targetW,targetH);ctx.drawImage(drawSource,0,0,targetW,targetH);
+    let blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",quality));
+    if(!blob)return file;
+    // If a small original became larger, keep the original. Large images stay resized because
+    // dimensions, not just file bytes, drive vision token usage.
+    if(scale===1&&blob.size>=file.size)return file;
+    const stem=(file.name||"image").replace(/\.[^.]+$/,'');
+    return new File([blob],`${stem}.jpg`,{type:"image/jpeg",lastModified:file.lastModified||Date.now()});
+  }finally{
+    try{bitmap?.close?.()}catch{}
+    if(url)URL.revokeObjectURL(url);
+    if(img)img.src="";
+  }
+}
+function renderAttachments(){els.attachmentTray.innerHTML=state.pending.map((a,i)=>`<div class="pending-attachment">${a.localUrl?`<img src="${a.localUrl}" alt="">`:`<div class="pending-icon">▤</div>`}<div class="pending-copy"><strong>${escapeHtml(a.filename)}</strong><small>${a.status==="optimizing"?"Optimizing image…":a.status==="uploading"?"Uploading…":a.status==="ready"?formatBytes(a.size_bytes):(a.error||"Upload failed")}</small></div><button data-remove="${i}">×</button></div>`).join("");els.attachmentTray.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{const i=Number(b.dataset.remove);const a=state.pending[i];if(a?.localUrl)URL.revokeObjectURL(a.localUrl);state.pending.splice(i,1);renderAttachments()})}
 function mimeFromName(name){const e=name.split(".").pop().toLowerCase();if(e==="pdf")return"application/pdf";if(e==="csv")return"text/csv";if(["txt","md"].includes(e))return"text/plain";return"application/octet-stream"}
 
 async function renameCurrentChat(){if(state.currentChat)renameChat(state.currentChat)}
@@ -297,7 +344,7 @@ function switchAdminTab(tab){const ids={overview:"adminOverviewPanel",customers:
 function renderStats(s){const cards=[['Customers',s.users],['Active today',s.active_today],['AI requests today',s.requests_today],['Tokens today',formatNumber(s.tokens_today||0)],['Images today',s.images_today||0],['Avg response',s.avg_response_ms?`${(s.avg_response_ms/1000).toFixed(2)}s`:'—'],['Suspended',s.suspended]];$("#statsGrid").innerHTML=cards.map(([k,v])=>`<div class="stat-card"><small>${k}</small><strong>${typeof v==="number"?formatNumber(v):v}</strong></div>`).join("")}
 async function loadAdminUsers(){if(state.user?.role!=="admin")return;const q=$("#adminUserSearch").value.trim();const r=await api(`/api/admin/users${q?`?q=${encodeURIComponent(q)}`:""}`);if(!r.ok)return toast(r.error||"Could not load customers","error");const users=r.users||[];$("#adminCustomerCount").textContent=`${users.length} shown`;$("#usersTable").innerHTML=users.map(u=>{const override=u.daily_limit_override===null||u.daily_limit_override===undefined?"":Number(u.daily_limit_override);const imageOverride=u.daily_image_limit_override===null||u.daily_image_limit_override===undefined?"":Number(u.daily_image_limit_override);const effective=Number(u.unlimited_usage||0)===1?"Unlimited":(Number(u.effective_daily_limit||0)===0?"Unlimited":formatNumber(Number(u.effective_daily_limit||0)));const imageEffective=Number(u.effective_daily_image_limit||0)===0?"Unlimited":formatNumber(Number(u.effective_daily_image_limit||0));return `<tr><td><strong>${escapeHtml(u.name)}</strong><small>${escapeHtml(u.email)}</small></td><td><strong>${formatNumber(Number(u.requests_today||0))}</strong><small>requests</small></td><td><input class="customer-limit-input" data-limit-user="${u.id}" type="number" min="0" max="100000" value="${override}" placeholder="Global ${r.global_daily_limit||0}" title="Blank uses global limit; 0 means unlimited"></td><td><label class="mini-switch"><input data-unlimited-user="${u.id}" type="checkbox" ${Number(u.unlimited_usage||0)===1?"checked":""}><span></span></label></td><td><strong>${formatNumber(Number(u.images_today||0))}</strong><small>images</small></td><td><input class="customer-limit-input" data-image-limit-user="${u.id}" type="number" min="0" max="100000" value="${imageOverride}" placeholder="Global ${r.global_daily_image_limit||0}" title="Blank uses global image limit; 0 means unlimited"></td><td><span class="pill ${u.status==="active"?"good":"bad"}">${u.status}</span></td><td><span class="pill">${u.role}</span></td><td><strong>${effective} AI · ${imageEffective} images</strong><small>${formatNumber(Number(u.total_tokens||0))} tokens · ${formatNumber(Number(u.chat_count||0))} chats</small></td><td><div class="customer-actions"><button class="table-action" data-user="${u.id}" data-status="${u.status}">${u.status==="active"?"Suspend":"Activate"}</button><button class="table-action" data-role-user="${u.id}" data-role="${u.role}">${u.role==="admin"?"Make user":"Make admin"}</button></div></td></tr>`}).join("");const table=$("#usersTable");table.querySelectorAll("[data-user]").forEach(b=>b.onclick=()=>adminPatchUser(b.dataset.user,{status:b.dataset.status==="active"?"suspended":"active"}));table.querySelectorAll("[data-role-user]").forEach(b=>b.onclick=()=>adminPatchUser(b.dataset.roleUser,{role:b.dataset.role==="admin"?"user":"admin"}));table.querySelectorAll("[data-unlimited-user]").forEach(c=>c.onchange=()=>adminPatchUser(c.dataset.unlimitedUser,{unlimited_usage:c.checked},{quiet:true}));table.querySelectorAll("[data-limit-user]").forEach(inp=>inp.onchange=()=>adminPatchUser(inp.dataset.limitUser,{daily_limit_override:inp.value===""?null:Number(inp.value)},{quiet:true}));table.querySelectorAll("[data-image-limit-user]").forEach(inp=>inp.onchange=()=>adminPatchUser(inp.dataset.imageLimitUser,{daily_image_limit_override:inp.value===""?null:Number(inp.value)},{quiet:true}))}
 async function adminPatchUser(id,body,opts={}){const r=await api(`/api/admin/users/${id}`,{method:"PATCH",body});if(!r.ok)return toast(r.error,"error");if(!opts.quiet)toast("Customer updated");await loadAdminUsers()}
-function renderAdminSettings(d){const s=d.settings||{};state.adminSettings=s;$("#adminModel").value=d.model||"gpt-6-luna";$("#adminSystemPrompt").value=s.system_prompt||"";$("#adminServiceEnabled").checked=s.service_enabled!=="false";$("#adminDailyLimit").value=s.daily_request_limit??100;$("#adminImageUploadsEnabled").checked=s.image_uploads_enabled!=="false";$("#adminDailyImageLimit").value=s.daily_image_upload_limit??20;$("#adminMaxImageMb").value=s.max_image_upload_mb??d.max_upload_mb??18;$("#adminSignups").checked=s.signups_enabled!=="false";$("#adminMemory").checked=s.memory_enabled!=="false";$("#adminWeb").checked=s.web_search_enabled==="true";$("#adminImageDetail").value=s.image_detail||"auto";$("#adminPins").value=s.max_pins||5;$("#adminOwnerRules").checked=s.owner_rules_enabled!=="false";$("#adminOpenMode").checked=s.open_response_mode!=="false";$("#adminServiceStatus").textContent=s.service_enabled==="false"?"Paused":"Online";$("#adminServiceStatus").classList.toggle("danger-text",s.service_enabled==="false");const n=Number(s.daily_request_limit||0);$("#adminDefaultLimitSummary").textContent=n===0?"Unlimited":`${formatNumber(n)} requests`;const images=Number(s.daily_image_upload_limit||0);$("#adminImageLimitSummary").textContent=s.image_uploads_enabled==="false"?"Disabled":(images===0?"Unlimited":`${formatNumber(images)} images`);$("#adminRuntimeSummary").textContent="CFocus 1.0";$("#adminReleaseSummary").textContent=`ChatFocus ${d.release||"V1.16"} · ${d.model||"gpt-6-luna"}`}
+function renderAdminSettings(d){const s=d.settings||{};state.adminSettings=s;$("#adminModel").value=d.model||"gpt-6-luna";$("#adminSystemPrompt").value=s.system_prompt||"";$("#adminServiceEnabled").checked=s.service_enabled!=="false";$("#adminDailyLimit").value=s.daily_request_limit??100;$("#adminImageUploadsEnabled").checked=s.image_uploads_enabled!=="false";$("#adminDailyImageLimit").value=s.daily_image_upload_limit??20;$("#adminMaxImageMb").value=s.max_image_upload_mb??d.max_upload_mb??18;$("#adminSignups").checked=s.signups_enabled!=="false";$("#adminMemory").checked=s.memory_enabled!=="false";$("#adminWeb").checked=s.web_search_enabled==="true";$("#adminImageDetail").value=s.image_detail||"low";$("#adminPins").value=s.max_pins||5;$("#adminOwnerRules").checked=s.owner_rules_enabled!=="false";$("#adminOpenMode").checked=s.open_response_mode!=="false";$("#adminServiceStatus").textContent=s.service_enabled==="false"?"Paused":"Online";$("#adminServiceStatus").classList.toggle("danger-text",s.service_enabled==="false");const n=Number(s.daily_request_limit||0);$("#adminDefaultLimitSummary").textContent=n===0?"Unlimited":`${formatNumber(n)} requests`;const images=Number(s.daily_image_upload_limit||0);$("#adminImageLimitSummary").textContent=s.image_uploads_enabled==="false"?"Disabled":(images===0?"Unlimited":`${formatNumber(images)} images`);$("#adminRuntimeSummary").textContent="CFocus 1.0";$("#adminReleaseSummary").textContent=`ChatFocus ${d.release||"V1.17"} · ${d.model||"gpt-6-luna"}`}
 async function saveAdminSettingsPart(body,message="Settings saved"){const r=await api("/api/admin/settings",{method:"PUT",body});if(!r.ok)return toast(r.error,"error");renderAdminSettings(r);toast(message);const me=await api("/api/me");if(me.ok){state.settings=me.settings;els.webToggle.classList.toggle("hidden",!state.settings.web_search_enabled)}return r}
 async function saveAdminLimits(){await saveAdminSettingsPart({service_enabled:$("#adminServiceEnabled").checked,daily_request_limit:Number($("#adminDailyLimit").value||0),image_uploads_enabled:$("#adminImageUploadsEnabled").checked,daily_image_upload_limit:Number($("#adminDailyImageLimit").value||0),max_image_upload_mb:Number($("#adminMaxImageMb").value||18),signups_enabled:$("#adminSignups").checked,memory_enabled:$("#adminMemory").checked,web_search_enabled:$("#adminWeb").checked},"Limits & access saved");await loadAdminUsers()}
 async function saveAdminProduct(){await saveAdminSettingsPart({image_detail:$("#adminImageDetail").value,max_pins:Number($("#adminPins").value||5)},"Product defaults saved")}
