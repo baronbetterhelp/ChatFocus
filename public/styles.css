@@ -145,3 +145,15 @@ button:active{transform:scale(.975)}
 @media(max-width:900px){.library-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.feature-wrap{padding:30px 24px 92px}}
 @media(max-width:600px){.feature-wrap{padding:24px 14px 90px}.feature-header{align-items:flex-start}.feature-header h1{font-size:28px}.feature-header p{font-size:12px}.feature-header-actions{width:100%}.feature-search{width:100%}.library-grid,.projects-grid{grid-template-columns:1fr}.library-card{min-height:170px}.library-card>img,.library-file-icon{height:120px}.schedule-row{grid-template-columns:1fr}.schedule-card{grid-template-columns:1fr;gap:9px}.schedule-card-actions{justify-content:flex-start;flex-wrap:wrap}.project-create-bar{flex-wrap:wrap}.project-create-bar input{flex-basis:100%;height:38px}.hub-item{height:42px}.sidebar-hub{margin-top:7px}.new-chat-btn{margin-bottom:4px}}
 .new-chat-btn{border:0;background:transparent;border-radius:12px;font-weight:620;padding:0 11px}.new-chat-btn:hover{background:var(--panel2)}.sidebar-search{background:transparent}.sidebar-search:focus-within{background:var(--panel2)}
+
+/* V1.7 instant-feel interaction tuning */
+button,[role="button"],a,input,textarea,select{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+button,[role="button"],.chat-row,.hub-item,.account-btn{will-change:transform}
+button:active,[role="button"]:active,.hub-item:active,.chat-row:active,.account-btn:active{transform:scale(.985)}
+.sidebar{transition-duration:.14s!important}
+.sidebar-backdrop{transition-duration:.14s!important}
+.new-chat-btn,.hub-item,.chat-row,.tool-btn,.round-btn,.intelligence-active-btn{transition:background .09s ease,color .09s ease,border-color .09s ease,transform .08s ease!important}
+.attach-menu-trigger.intelligence-on .plus-icon{transform:none!important}
+.intelligence-active-btn{position:relative}
+.intelligence-active-btn::after{content:"";width:6px;height:6px;border-radius:50%;background:#8b7cff;box-shadow:0 0 0 3px color-mix(in srgb,#8b7cff 16%,transparent)}
+html[data-intelligence="on"] .intelligence-active-btn{border-color:color-mix(in srgb,#8b7cff 42%,var(--line2));background:color-mix(in srgb,var(--panel2) 80%,#8b7cff 20%)}
