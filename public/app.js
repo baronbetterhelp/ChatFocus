@@ -3,12 +3,12 @@ const $$ = s => [...document.querySelectorAll(s)];
 const state = {
   user:null, settings:null, chats:[], currentChat:null, messages:[], pending:[], generating:false,
   controller:null, authMode:"login", view:"chat", web:false, intelligence:localStorage.getItem("chatfocus-intelligence")==="true", theme:localStorage.getItem("chatfocus-theme")||"system",
-  recognition:null, dictating:false
+  recognition:null, dictating:false, chatCache:new Map(), projects:[], library:[], schedules:[], activeProject:null, streamRenderQueued:false
 };
 
 const els = {
   authView:$("#authView"),appView:$("#appView"),authForm:$("#authForm"),authName:$("#authName"),authEmail:$("#authEmail"),authPassword:$("#authPassword"),nameField:$("#nameField"),authTitle:$("#authTitle"),authSubtitle:$("#authSubtitle"),authSubmit:$("#authSubmit"),authSwitch:$("#authSwitch"),
-  sidebar:$("#sidebar"),sidebarBackdrop:$("#sidebarBackdrop"),chatList:$("#chatList"),chatSearch:$("#chatSearch"),currentChatTitle:$("#currentChatTitle"),messageList:$("#messageList"),messagesScroller:$("#messagesScroller"),composer:$("#composer"),fileInput:$("#fileInput"),cameraInput:$("#cameraInput"),photoInput:$("#photoInput"),attachMenu:$("#attachMenu"),attachMenuBtn:$("#attachMenuBtn"),attachmentTray:$("#attachmentTray"),sendBtn:$("#sendBtn"),stopBtn:$("#stopBtn"),webToggle:$("#webToggle"),adminNav:$("#adminNav"),chatView:$("#chatView"),adminView:$("#adminView"),accountPanel:$("#accountPanel")
+  sidebar:$("#sidebar"),sidebarBackdrop:$("#sidebarBackdrop"),pinnedChatList:$("#pinnedChatList"),recentChatList:$("#recentChatList"),pinnedSection:$("#pinnedSection"),chatSearch:$("#chatSearch"),currentChatTitle:$("#currentChatTitle"),messageList:$("#messageList"),messagesScroller:$("#messagesScroller"),composer:$("#composer"),fileInput:$("#fileInput"),cameraInput:$("#cameraInput"),photoInput:$("#photoInput"),attachMenu:$("#attachMenu"),attachMenuBtn:$("#attachMenuBtn"),attachmentTray:$("#attachmentTray"),sendBtn:$("#sendBtn"),stopBtn:$("#stopBtn"),webToggle:$("#webToggle"),adminNav:$("#adminNav"),chatView:$("#chatView"),libraryView:$("#libraryView"),projectsView:$("#projectsView"),scheduledView:$("#scheduledView"),adminView:$("#adminView"),accountPanel:$("#accountPanel")
 };
 
 boot();
@@ -28,7 +28,7 @@ function bindEvents(){
   $("#brandHome").addEventListener("click",()=>{switchView("chat"); closeSidebar();});
   $("#refreshChats").addEventListener("click",()=>loadChats());
   $("#openSidebar").addEventListener("click",openSidebar); $("#closeSidebar").addEventListener("click",closeSidebar); els.sidebarBackdrop.addEventListener("click",closeSidebar);
-  els.chatSearch.addEventListener("input",debounce(()=>loadChats(els.chatSearch.value),250));
+  els.chatSearch.addEventListener("input",()=>renderChats(els.chatSearch.value));
   els.sendBtn.addEventListener("click",sendMessage); $("#stopBtn").addEventListener("click",stopGeneration);
   els.composer.addEventListener("input",autoGrow); els.composer.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendMessage();}});
   els.fileInput.addEventListener("change",e=>handleFiles([...e.target.files]));
@@ -54,7 +54,17 @@ function bindEvents(){
   els.accountPanel.addEventListener("click",e=>{if(e.target===els.accountPanel)closeAccountPanel()});
   $("#accountAdminBtn").addEventListener("click",()=>{closeAccountPanel();switchView("admin")});
   $("#adminNav").addEventListener("click",()=>switchView("admin"));
-  $$('[data-view="chat"]').forEach(b=>b.addEventListener("click",()=>switchView("chat")));
+  $("#libraryNav").addEventListener("click",()=>switchView("library"));
+  $("#projectsNav").addEventListener("click",()=>switchView("projects"));
+  $("#scheduledNav").addEventListener("click",()=>switchView("scheduled"));
+  $("#librarySearch").addEventListener("input",debounce(()=>loadLibrary($("#librarySearch").value),160));
+  $("#newProjectBtn").addEventListener("click",()=>toggleProjectCreate(true));
+  $("#cancelProjectBtn").addEventListener("click",()=>toggleProjectCreate(false));
+  $("#createProjectBtn").addEventListener("click",createProject);
+  $("#projectNameInput").addEventListener("keydown",e=>{if(e.key==="Enter")createProject()});
+  $("#newScheduleBtn").addEventListener("click",()=>toggleScheduleForm(true));
+  $("#cancelScheduleBtn").addEventListener("click",()=>toggleScheduleForm(false));
+  $("#saveScheduleBtn").addEventListener("click",createSchedule);
   $("#adminRefresh").addEventListener("click",loadAdmin); $("#adminUserSearch").addEventListener("input",debounce(loadAdminUsers,280)); $("#saveAdminSettings").addEventListener("click",saveAdminSettings);
   $$(".suggestion").forEach(b=>b.addEventListener("click",()=>{els.composer.value=b.dataset.prompt||"";autoGrow();els.composer.focus();}));
   $("#confirmCancel").addEventListener("click",()=>closeConfirm(false));
@@ -72,11 +82,53 @@ async function enterApp(){els.authView.classList.add("hidden");els.appView.class
 
 async function api(url,{method="GET",body,headers}={}){try{const opts={method,headers:{...(body instanceof FormData?{}:{"content-type":"application/json"}),...(headers||{})}};if(body!==undefined)opts.body=body instanceof FormData?body:JSON.stringify(body);const r=await fetch(url,opts);const ct=r.headers.get("content-type")||"";const data=ct.includes("application/json")?await r.json():{text:await r.text()};return {ok:r.ok,status:r.status,...data}}catch(e){return{ok:false,error:e.message||"Network error"}}}
 
-async function loadChats(q=""){const r=await api(`/api/chats${q?`?q=${encodeURIComponent(q)}`:""}`);if(!r.ok)return;state.chats=r.chats||[];renderChats()}
-function renderChats(){els.chatList.innerHTML="";if(!state.chats.length){els.chatList.innerHTML='<div style="padding:18px 10px;color:var(--muted);font-size:12px">No conversations yet.</div>';return}for(const c of state.chats){const row=document.createElement("div");row.className=`chat-row ${state.currentChat?.id===c.id?"active":""}`;row.dataset.id=c.id;row.innerHTML=`<button class="chat-open">${c.pinned?'<span class="chat-pin">◆</span>':""}${escapeHtml(c.title)}</button><button class="chat-more">•••</button>`;row.querySelector(".chat-open").onclick=()=>openChat(c.id);row.querySelector(".chat-more").onclick=e=>{e.stopPropagation();showChatMenu(row,c)};els.chatList.appendChild(row)}}
-function showChatMenu(row,c){$$('.chat-menu').forEach(x=>x.remove());const menu=document.createElement("div");menu.className="chat-menu";menu.innerHTML=`<button data-a="rename">Rename</button><button data-a="pin">${c.pinned?"Unpin":"Pin"}</button><button data-a="delete" class="danger-text">Delete</button>`;menu.onclick=async e=>{const a=e.target.dataset.a;if(!a)return;if(a==="rename")await renameChat(c);if(a==="pin")await pinChat(c);if(a==="delete")await deleteChat(c);menu.remove()};row.appendChild(menu)}
-async function newChat(focus=true){if(state.generating)return toast("Stop the current response first.");const r=await api("/api/chats",{method:"POST",body:{}});if(!r.ok)return toast(r.error,"error");state.currentChat=r.chat;state.messages=[];state.pending=[];renderAttachments();renderMessages();els.currentChatTitle.textContent="New chat";await loadChats();switchView("chat");closeSidebar();if(focus)els.composer.focus()}
-async function openChat(id){if(state.generating){toast("Stop the current response before switching chats.");return}const r=await api(`/api/chats/${id}`);if(!r.ok)return toast(r.error||"Could not open chat","error");state.currentChat=r.chat;state.messages=r.messages||[];state.pending=[];renderAttachments();renderMessages();els.currentChatTitle.textContent=r.chat.title;renderChats();switchView("chat");closeSidebar();scrollBottom(false)}
+async function loadChats(){
+  const r=await api("/api/chats"); if(!r.ok)return;
+  state.chats=r.chats||[]; renderChats(els.chatSearch.value);
+  populateScheduleChatOptions();
+}
+function renderChats(query=""){
+  const q=String(query||"").trim().toLowerCase();
+  const visible=q?state.chats.filter(c=>(c.title||"").toLowerCase().includes(q)):state.chats;
+  const pinned=visible.filter(c=>c.pinned), recent=visible.filter(c=>!c.pinned);
+  els.pinnedSection.classList.toggle("hidden",!pinned.length);
+  els.pinnedChatList.innerHTML=""; els.recentChatList.innerHTML="";
+  for(const c of pinned) els.pinnedChatList.appendChild(makeChatRow(c,true));
+  for(const c of recent) els.recentChatList.appendChild(makeChatRow(c,false));
+  if(!visible.length) els.recentChatList.innerHTML='<div class="empty-sidebar">No conversations found.</div>';
+}
+function makeChatRow(c,pinned=false){
+  const row=document.createElement("div"); row.className=`chat-row ${state.currentChat?.id===c.id?"active":""}`; row.dataset.id=c.id;
+  row.innerHTML=`<button class="chat-open">${pinned?'<span class="chat-pin">◆</span>':""}${escapeHtml(c.title)}</button><button class="chat-more" aria-label="Conversation options">•••</button>`;
+  const open=row.querySelector(".chat-open"); open.onclick=()=>openChat(c.id); open.onpointerenter=()=>prefetchChat(c.id); open.onpointerdown=()=>prefetchChat(c.id);
+  row.querySelector(".chat-more").onclick=e=>{e.stopPropagation();showChatMenu(row,c)};
+  return row;
+}
+async function prefetchChat(id){
+  if(state.chatCache.has(id))return;
+  const r=await api(`/api/chats/${id}`); if(r.ok)state.chatCache.set(id,{chat:r.chat,messages:r.messages||[],at:Date.now()});
+}
+function showChatMenu(row,c){
+  $$('.chat-menu').forEach(x=>x.remove()); const menu=document.createElement("div"); menu.className="chat-menu";
+  menu.innerHTML=`<button data-a="rename">Rename</button><button data-a="pin">${c.pinned?"Unpin":"Pin"}</button><button data-a="project">Move to project</button><button data-a="delete" class="danger-text">Delete</button>`;
+  menu.onclick=async e=>{const a=e.target.dataset.a;if(!a)return;if(a==="rename")await renameChat(c);if(a==="pin")await pinChat(c);if(a==="project")await moveChatToProject(c);if(a==="delete")await deleteChat(c);menu.remove()}; row.appendChild(menu)
+}
+async function newChat(focus=true,projectId=null){
+  if(state.generating)return toast("Stop the current response first.");
+  const r=await api("/api/chats",{method:"POST",body:{...(projectId?{project_id:projectId}:{})}}); if(!r.ok)return toast(r.error,"error");
+  state.currentChat=r.chat; state.messages=[]; state.pending=[]; state.chatCache.set(r.chat.id,{chat:r.chat,messages:[],at:Date.now()});
+  state.chats.unshift(r.chat); renderAttachments(); renderMessages(); els.currentChatTitle.textContent="New chat"; renderChats(els.chatSearch.value); switchView("chat"); closeSidebar(); if(focus)els.composer.focus();
+}
+function applyChatData(chat,messages){
+  state.currentChat=chat; state.messages=messages||[]; state.pending=[]; renderAttachments(); renderMessages(); els.currentChatTitle.textContent=chat.title; renderChats(els.chatSearch.value); switchView("chat"); closeSidebar(); scrollBottom(false)
+}
+async function openChat(id){
+  if(state.generating){toast("Stop the current response before switching chats.");return}
+  const cached=state.chatCache.get(id); if(cached)applyChatData(cached.chat,cached.messages);
+  const r=await api(`/api/chats/${id}`); if(!r.ok){if(!cached)toast(r.error||"Could not open chat","error");return}
+  state.chatCache.set(id,{chat:r.chat,messages:r.messages||[],at:Date.now()}); applyChatData(r.chat,r.messages||[]); maybeRetitleExistingChat(r.chat,r.messages||[])
+}
+async function maybeRetitleExistingChat(chat,messages){const generic=/^(new chat|hello|hi|hey|question|conversation|file analysis)$/i.test((chat.title||"").trim());if(!chat.auto_title||!generic||(messages||[]).length<2)return;const r=await api(`/api/chats/${chat.id}/retitle`,{method:"POST",body:{}});if(r.ok&&r.chat){const i=state.chats.findIndex(c=>c.id===chat.id);if(i>=0)state.chats[i]={...state.chats[i],...r.chat};if(state.currentChat?.id===chat.id){state.currentChat={...state.currentChat,...r.chat};els.currentChatTitle.textContent=r.chat.title}renderChats(els.chatSearch.value)}}
 
 function renderMessages(){if(!state.messages.length){els.messageList.innerHTML="";return}els.messageList.innerHTML="";for(const m of state.messages){const node=document.createElement("article");node.className=`message message-${m.role}`;node.dataset.id=m.id;if(m.role==="user"){node.innerHTML=`<div class="message-files">${renderFileChips(m.attachments||[])}</div><div class="bubble">${escapeHtml(m.content||"")}</div><div class="message-actions"><button class="message-action" data-action="copy">Copy</button><button class="message-action" data-action="edit">Edit & resend</button></div>`}else{node.innerHTML=`<div class="assistant-icon"><span class="brand-mark"><i></i><b></b><span></span></span></div><div><div class="assistant-body">${m.status==="streaming"&&!m.content?typingHtml():renderMarkdown(m.content||"")}</div><div class="message-actions"><button class="message-action" data-action="copy">Copy</button><button class="message-action" data-action="regen">Regenerate</button></div></div>`}node.querySelectorAll("[data-action]").forEach(b=>b.onclick=()=>handleMessageAction(b.dataset.action,m));els.messageList.appendChild(node);wireCodeCopy(node)}}
 function renderFileChips(atts){return (atts||[]).map(a=>{const url=`/api/files/${encodeURIComponent(a.id)}`;if((a.mime_type||"").startsWith("image/"))return `<a class="file-chip" href="${url}" target="_blank"><img src="${url}" alt=""><span>${escapeHtml(a.filename)}</span></a>`;return `<a class="file-chip" href="${url}" target="_blank"><span class="file-icon">▤</span><span>${escapeHtml(a.filename)}</span></a>`}).join("")}
@@ -87,8 +139,9 @@ async function regenerate(userMessageId){if(!userMessageId){const prev=[...state
 async function streamRegenerate(userMessageId){if(!state.currentChat||state.generating)return;const idx=state.messages.findIndex(x=>x.id===userMessageId);if(idx>=0)state.messages=state.messages.slice(0,idx+1);state.messages.push({id:"temp-assistant",role:"assistant",content:"",status:"streaming",parent_message_id:userMessageId,attachments:[]});renderMessages();scrollBottom();await runStream(`/api/chats/${state.currentChat.id}/regenerate`,{user_message_id:userMessageId,web_search:state.web,intelligence:state.intelligence})}
 
 async function sendMessage(){if(state.generating||!state.currentChat)return;const content=els.composer.value.trim();const ready=state.pending.filter(x=>x.status==="ready");const uploading=state.pending.some(x=>x.status==="uploading");if(uploading)return toast("A file is still uploading.");if(!content&&!ready.length)return;const optimistic={id:`temp-user-${Date.now()}`,role:"user",content,attachments:ready.map(x=>({id:x.id,filename:x.filename,mime_type:x.mime_type,size_bytes:x.size_bytes}))};state.messages.push(optimistic,{id:"temp-assistant",role:"assistant",content:"",status:"streaming",attachments:[]});els.composer.value="";autoGrow();renderMessages();scrollBottom();const ids=ready.map(x=>x.id);state.pending=[];renderAttachments();await runStream(`/api/chats/${state.currentChat.id}/messages`,{content,attachment_ids:ids,web_search:state.web,intelligence:state.intelligence})}
-async function runStream(url,body){state.generating=true;els.sendBtn.classList.add("hidden");els.stopBtn.classList.remove("hidden");state.controller=new AbortController();try{const r=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),signal:state.controller.signal});if(!r.ok){const e=await r.json().catch(()=>({error:"Generation failed"}));throw new Error(e.error||"Generation failed")}const reader=r.body.getReader(),decoder=new TextDecoder();let buf="",assistant=state.messages[state.messages.length-1];while(true){const {done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split("\n");buf=lines.pop()||"";for(const line of lines){if(!line.trim())continue;let evt;try{evt=JSON.parse(line)}catch{continue}if(evt.type==="start"){assistant.id=evt.message_id}else if(evt.type==="delta"){assistant.content=(assistant.content||"")+evt.delta;assistant.status="streaming";updateStreamingAssistant(assistant)}else if(evt.type==="error"){toast(evt.error||"Generation error","error")}else if(evt.type==="done"){assistant.status="complete";updateStreamingAssistant(assistant)}}} }catch(e){if(e.name!=="AbortError")toast(e.message||"Generation failed","error")}finally{state.generating=false;state.controller=null;els.sendBtn.classList.remove("hidden");els.stopBtn.classList.add("hidden");if(state.currentChat)await openChat(state.currentChat.id);await loadChats();}}
-function updateStreamingAssistant(m){const node=document.querySelector('.message-assistant:last-child .assistant-body');if(node){node.innerHTML=m.content?renderMarkdown(m.content):typingHtml();wireCodeCopy(node.closest(".message"));scrollBottom(false)}}
+async function runStream(url,body){state.generating=true;els.sendBtn.classList.add("hidden");els.stopBtn.classList.remove("hidden");state.controller=new AbortController();try{const r=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),signal:state.controller.signal});if(!r.ok){const e=await r.json().catch(()=>({error:"Generation failed"}));throw new Error(e.error||"Generation failed")}const reader=r.body.getReader(),decoder=new TextDecoder();let buf="",assistant=state.messages[state.messages.length-1];while(true){const {done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split("\n");buf=lines.pop()||"";for(const line of lines){if(!line.trim())continue;let evt;try{evt=JSON.parse(line)}catch{continue}if(evt.type==="start"){assistant.id=evt.message_id}else if(evt.type==="delta"){assistant.content=(assistant.content||"")+evt.delta;assistant.status="streaming";updateStreamingAssistant(assistant)}else if(evt.type==="error"){toast(evt.error||"Generation error","error")}else if(evt.type==="done"){assistant.status="complete";updateStreamingAssistant(assistant)}}} }catch(e){if(e.name!=="AbortError")toast(e.message||"Generation failed","error")}finally{state.generating=false;state.controller=null;els.sendBtn.classList.remove("hidden");els.stopBtn.classList.add("hidden");const id=state.currentChat?.id;if(id)await openChat(id);await loadChats();if(id){setTimeout(()=>refreshSmartTitle(id),900);setTimeout(()=>refreshSmartTitle(id),2400)}}}
+function updateStreamingAssistant(m){if(state.streamRenderQueued)return;state.streamRenderQueued=true;requestAnimationFrame(()=>{state.streamRenderQueued=false;const node=document.querySelector('.message-assistant:last-child .assistant-body');if(node){node.innerHTML=m.content?renderMarkdown(m.content):typingHtml();wireCodeCopy(node.closest(".message"));scrollBottom(false)}})}
+async function refreshSmartTitle(chatId){const r=await api(`/api/chats/${chatId}/meta`);if(!r.ok||!r.chat)return;const i=state.chats.findIndex(c=>c.id===chatId);if(i>=0)state.chats[i]={...state.chats[i],...r.chat};if(state.currentChat?.id===chatId){state.currentChat={...state.currentChat,...r.chat};els.currentChatTitle.textContent=r.chat.title}const cached=state.chatCache.get(chatId);if(cached)cached.chat={...cached.chat,...r.chat};renderChats(els.chatSearch.value)}
 function stopGeneration(){state.controller?.abort();state.generating=false;els.sendBtn.classList.remove("hidden");els.stopBtn.classList.add("hidden")}
 
 async function handleFiles(files){if(!files.length)return;if(!state.currentChat)await newChat(false);for(const file of files.slice(0,10)){const temp={tempId:crypto.randomUUID(),filename:file.name,mime_type:file.type||mimeFromName(file.name),size_bytes:file.size,status:"uploading",localUrl:file.type.startsWith("image/")?URL.createObjectURL(file):null};state.pending.push(temp);renderAttachments();const fd=new FormData();fd.append("file",file);fd.append("chat_id",state.currentChat.id);const r=await api("/api/uploads",{method:"POST",body:fd});if(r.ok){Object.assign(temp,r.attachment,{status:"ready"})}else{temp.status="error";temp.error=r.error||"Upload failed";toast(`${file.name}: ${temp.error}`,"error")}renderAttachments()}els.fileInput.value="";els.cameraInput.value="";els.photoInput.value=""}
@@ -100,9 +153,70 @@ async function renameChat(c){const title=prompt("Rename this chat",c.title);if(t
 async function pinCurrentChat(){if(state.currentChat)pinChat(state.currentChat)}
 async function pinChat(c){const r=await api(`/api/chats/${c.id}`,{method:"PATCH",body:{pinned:!c.pinned}});if(!r.ok)return toast(r.error,"error");if(state.currentChat?.id===c.id)state.currentChat=r.chat;await loadChats()}
 async function deleteCurrentChat(){if(state.currentChat)deleteChat(state.currentChat)}
-async function deleteChat(c){const ok=await confirmBox("Delete chat?",`“${c.title}” and its uploaded files will be permanently deleted.`);if(!ok)return;const r=await api(`/api/chats/${c.id}`,{method:"DELETE"});if(!r.ok)return toast(r.error,"error");state.currentChat=null;state.messages=[];await loadChats();if(state.chats.length)await openChat(state.chats[0].id);else await newChat(false)}
+async function deleteChat(c){const ok=await confirmBox("Delete chat?",`“${c.title}” and its uploaded files will be permanently deleted.`);if(!ok)return;const r=await api(`/api/chats/${c.id}`,{method:"DELETE"});if(!r.ok)return toast(r.error,"error");state.chatCache.delete(c.id);if(state.currentChat?.id===c.id){state.currentChat=null;state.messages=[]}await loadChats();if(!state.currentChat){if(state.chats.length)await openChat(state.chats[0].id);else await newChat(false)}}
 
-function switchView(view){closeAccountPanel();state.view=view;els.chatView.classList.toggle("hidden",view!=="chat");els.adminView.classList.toggle("hidden",view!=="admin");$$('.nav-item').forEach(x=>x.classList.toggle("active",x.dataset.view===view));if(view==="admin")loadAdmin()}
+function setWorkspaceHeading(title,subtitle=""){$("#currentChatTitle").textContent=title;$("#modelLabel").textContent=subtitle;$("#modelLabel").classList.toggle("hidden",!subtitle)}
+function switchView(view){
+  closeAccountPanel();state.view=view;
+  const map={chat:els.chatView,library:els.libraryView,projects:els.projectsView,scheduled:els.scheduledView,admin:els.adminView};
+  Object.entries(map).forEach(([k,el])=>el?.classList.toggle("hidden",k!==view));
+  $$('.hub-item').forEach(x=>x.classList.toggle("active",x.dataset.view===view));
+  $(".topbar-actions")?.classList.toggle("hidden",view!=="chat");
+  if(view==="projects"){ $("#projectDetail")?.classList.add("hidden"); $("#projectsGrid")?.classList.remove("hidden"); state.activeProject=null; }
+  if(view==="chat"){setWorkspaceHeading(state.currentChat?.title||"New chat","CFocus 1.0")}
+  if(view==="library"){setWorkspaceHeading("Library","");loadLibrary()}
+  if(view==="projects"){setWorkspaceHeading("Projects","");loadProjects()}
+  if(view==="scheduled"){setWorkspaceHeading("Scheduled","");loadSchedules()}
+  if(view==="admin"){setWorkspaceHeading("Admin Console","");loadAdmin()}
+  closeSidebar()
+}
+
+async function loadLibrary(q=""){
+  const r=await api(`/api/library${q?`?q=${encodeURIComponent(q)}`:""}`);if(!r.ok)return toast(r.error||"Could not load library","error");state.library=r.files||[];renderLibrary()
+}
+function renderLibrary(){
+  const grid=$("#libraryGrid"); if(!grid)return;
+  if(!state.library.length){grid.innerHTML='<div class="feature-empty"><strong>Your library is empty</strong><span>Images, PDFs and documents you use in chats will appear here.</span></div>';return}
+  grid.innerHTML=state.library.map(f=>{const image=(f.mime_type||"").startsWith("image/");return `<button class="library-card" data-file="${f.id}">${image?`<img src="/api/files/${encodeURIComponent(f.id)}" alt="">`:`<span class="library-file-icon">${fileGlyph(f.mime_type,f.filename)}</span>`}<span class="library-card-copy"><strong>${escapeHtml(f.filename)}</strong><small>${escapeHtml(f.chat_title||"Conversation")} · ${formatBytes(f.size_bytes)}</small><em>${formatDate(f.created_at)}</em></span></button>`}).join("");
+  grid.querySelectorAll("[data-file]").forEach(b=>b.onclick=()=>window.open(`/api/files/${encodeURIComponent(b.dataset.file)}`,"_blank","noopener"))
+}
+function fileGlyph(mime,name){const n=(name||"").toLowerCase();if(mime==="application/pdf"||n.endsWith(".pdf"))return"PDF";if(n.match(/\.(doc|docx|odt|rtf)$/))return"DOC";if(n.match(/\.(xls|xlsx|csv|tsv)$/))return"XLS";if(n.match(/\.(ppt|pptx)$/))return"PPT";return"FILE"}
+
+async function loadProjects(){const r=await api("/api/projects");if(!r.ok)return toast(r.error||"Could not load projects","error");state.projects=r.projects||[];renderProjects()}
+function renderProjects(){
+  const grid=$("#projectsGrid");if(!grid)return;
+  if(!state.projects.length){grid.innerHTML='<div class="feature-empty"><strong>No projects yet</strong><span>Create a project to keep related conversations together.</span></div>';return}
+  grid.innerHTML=state.projects.map(p=>`<button class="project-card" data-project="${p.id}"><span class="project-folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg></span><span><strong>${escapeHtml(p.name)}</strong><small>${Number(p.chat_count||0)} conversation${Number(p.chat_count||0)===1?"":"s"}</small></span><i>›</i></button>`).join("");
+  grid.querySelectorAll("[data-project]").forEach(b=>b.onclick=()=>openProject(b.dataset.project))
+}
+function toggleProjectCreate(show){$("#projectCreateBar").classList.toggle("hidden",!show);if(show){$("#projectNameInput").value="";setTimeout(()=>$("#projectNameInput").focus(),20)}}
+async function createProject(){const name=$("#projectNameInput").value.trim();if(!name)return toast("Enter a project name.","error");const r=await api("/api/projects",{method:"POST",body:{name}});if(!r.ok)return toast(r.error,"error");toggleProjectCreate(false);await loadProjects();toast("Project created")}
+async function openProject(id){
+  const r=await api(`/api/projects/${id}`);if(!r.ok)return toast(r.error,"error");state.activeProject=r.project;
+  const detail=$("#projectDetail");detail.classList.remove("hidden");$("#projectsGrid").classList.add("hidden");
+  detail.innerHTML=`<div class="project-detail-head"><button class="icon-btn project-back" aria-label="Back">←</button><div><h2>${escapeHtml(r.project.name)}</h2><p>${(r.chats||[]).length} conversations</p></div><button class="primary-btn compact-primary project-new-chat">New chat</button></div><div class="project-chat-list">${(r.chats||[]).length?(r.chats||[]).map(c=>`<button data-project-chat="${c.id}"><span>${escapeHtml(c.title)}</span><small>${formatDate(c.updated_at)}</small><i>›</i></button>`).join(""):'<div class="feature-empty"><strong>No conversations yet</strong><span>Start a chat inside this project.</span></div>'}</div><div class="project-detail-actions"><button class="secondary-btn project-rename">Rename</button><button class="danger-btn project-delete">Delete project</button></div>`;
+  detail.querySelector(".project-back").onclick=()=>{detail.classList.add("hidden");$("#projectsGrid").classList.remove("hidden");state.activeProject=null};
+  detail.querySelector(".project-new-chat").onclick=()=>newChat(true,id);
+  detail.querySelectorAll("[data-project-chat]").forEach(b=>b.onclick=()=>openChat(b.dataset.projectChat));
+  detail.querySelector(".project-rename").onclick=async()=>{const name=prompt("Rename project",r.project.name);if(!name?.trim())return;const x=await api(`/api/projects/${id}`,{method:"PATCH",body:{name:name.trim()}});if(!x.ok)return toast(x.error,"error");await loadProjects();await openProject(id)};
+  detail.querySelector(".project-delete").onclick=async()=>{const ok=await confirmBox("Delete project?","The project will be removed. Its conversations will stay in ChatFocus.");if(!ok)return;const x=await api(`/api/projects/${id}`,{method:"DELETE"});if(!x.ok)return toast(x.error,"error");detail.classList.add("hidden");$("#projectsGrid").classList.remove("hidden");state.activeProject=null;await loadProjects();await loadChats()}
+}
+async function moveChatToProject(c){
+  if(!state.projects.length)await loadProjects();
+  if(!state.projects.length){switchView("projects");toggleProjectCreate(true);return toast("Create a project first.")}
+  const options=state.projects.map((p,i)=>`${i+1}. ${p.name}`).join("\n");const answer=prompt(`Move “${c.title}” to a project:\n0. No project\n${options}`);if(answer===null)return;
+  const n=Number(answer);let projectId=null;if(n>0&&state.projects[n-1])projectId=state.projects[n-1].id;else if(n!==0)return toast("Choose a valid project number.","error");
+  const r=await api(`/api/chats/${c.id}`,{method:"PATCH",body:{project_id:projectId}});if(!r.ok)return toast(r.error,"error");toast(projectId?"Moved to project":"Removed from project");await loadChats();if(state.view==="projects")await loadProjects()
+}
+
+function toggleScheduleForm(show){$("#scheduleForm").classList.toggle("hidden",!show);if(show){populateScheduleChatOptions();const d=new Date(Date.now()+60*60*1000);d.setMinutes(Math.ceil(d.getMinutes()/15)*15,0,0);$("#scheduleRunAt").value=toLocalInputValue(d);setTimeout(()=>$("#schedulePrompt").focus(),20)}}
+function populateScheduleChatOptions(){const sel=$("#scheduleChatSelect");if(!sel)return;const current=sel.value;sel.innerHTML='<option value="">Create a new conversation</option>'+state.chats.slice(0,100).map(c=>`<option value="${c.id}">${escapeHtml(c.title)}</option>`).join("");if([...sel.options].some(o=>o.value===current))sel.value=current}
+async function createSchedule(){const promptText=$("#schedulePrompt").value.trim(),run=$("#scheduleRunAt").value,frequency=$("#scheduleFrequency").value,chat_id=$("#scheduleChatSelect").value||null;if(!promptText||!run)return toast("Add a prompt and time.","error");const r=await api("/api/schedules",{method:"POST",body:{prompt:promptText,run_at:new Date(run).toISOString(),frequency,chat_id}});if(!r.ok)return toast(r.error,"error");$("#schedulePrompt").value="";toggleScheduleForm(false);await loadSchedules();await loadChats();toast("Scheduled")}
+async function loadSchedules(){const r=await api("/api/schedules");if(!r.ok)return toast(r.error||"Could not load schedules","error");state.schedules=r.schedules||[];renderSchedules()}
+function renderSchedules(){const list=$("#scheduleList");if(!list)return;if(!state.schedules.length){list.innerHTML='<div class="feature-empty"><strong>Nothing scheduled</strong><span>Create a prompt to run later, daily, or weekly.</span></div>';return}list.innerHTML=state.schedules.map(t=>`<article class="schedule-card ${t.enabled?"":"disabled"}"><div class="schedule-time"><strong>${formatDateTime(t.next_run_at)}</strong><span>${t.frequency==="once"?"One time":t.frequency[0].toUpperCase()+t.frequency.slice(1)}</span></div><div class="schedule-copy"><strong>${escapeHtml(t.prompt)}</strong><small>${escapeHtml(t.chat_title||"Scheduled conversation")}${t.last_error?` · Last run had an error`:""}</small></div><div class="schedule-card-actions"><button data-toggle-schedule="${t.id}" data-enabled="${t.enabled}">${t.enabled?"Pause":"Resume"}</button><button data-open-schedule-chat="${t.chat_id}">Open chat</button><button data-delete-schedule="${t.id}" class="danger-text">Delete</button></div></article>`).join("");list.querySelectorAll("[data-toggle-schedule]").forEach(b=>b.onclick=async()=>{const r=await api(`/api/schedules/${b.dataset.toggleSchedule}`,{method:"PATCH",body:{enabled:b.dataset.enabled!=="1"}});if(!r.ok)return toast(r.error,"error");loadSchedules()});list.querySelectorAll("[data-open-schedule-chat]").forEach(b=>b.onclick=()=>openChat(b.dataset.openScheduleChat));list.querySelectorAll("[data-delete-schedule]").forEach(b=>b.onclick=async()=>{const ok=await confirmBox("Delete schedule?","This scheduled prompt will stop running.");if(!ok)return;await api(`/api/schedules/${b.dataset.deleteSchedule}`,{method:"DELETE"});loadSchedules()})}
+function toLocalInputValue(d){const x=new Date(d.getTime()-d.getTimezoneOffset()*60000);return x.toISOString().slice(0,16)}
+function formatDateTime(v){if(!v)return"—";const d=new Date(String(v).replace(" ","T")+"Z");return Number.isNaN(d.getTime())?v:d.toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}
+
 async function loadAdmin(){if(state.user?.role!=="admin")return;const [s,set]=await Promise.all([api("/api/admin/stats"),api("/api/admin/settings")]);if(s.ok)renderStats(s.stats);if(set.ok)renderAdminSettings(set);await loadAdminUsers()}
 function renderStats(s){const cards=[['Users',s.users],['Chats',s.chats],['Messages',s.messages],['Files',s.files],['Tokens',formatNumber(s.total_tokens||0)]];$("#statsGrid").innerHTML=cards.map(([k,v])=>`<div class="stat-card"><small>${k}</small><strong>${typeof v==="number"?formatNumber(v):v}</strong></div>`).join("")}
 async function loadAdminUsers(){if(state.user?.role!=="admin")return;const q=$("#adminUserSearch").value.trim();const r=await api(`/api/admin/users${q?`?q=${encodeURIComponent(q)}`:""}`);if(!r.ok)return;$("#usersTable").innerHTML=(r.users||[]).map(u=>`<tr><td><strong>${escapeHtml(u.name)}</strong><small>${escapeHtml(u.email)}</small></td><td><span class="pill">${u.role}</span></td><td><span class="pill ${u.status==="active"?"good":"bad"}">${u.status}</span></td><td>${formatDate(u.last_seen_at||u.created_at)}</td><td><button class="table-action" data-user="${u.id}" data-status="${u.status}">${u.status==="active"?"Suspend":"Activate"}</button> <button class="table-action" data-role-user="${u.id}" data-role="${u.role}">${u.role==="admin"?"Make user":"Make admin"}</button></td></tr>`).join("");$("#usersTable").querySelectorAll("[data-user]").forEach(b=>b.onclick=()=>adminPatchUser(b.dataset.user,{status:b.dataset.status==="active"?"suspended":"active"}));$("#usersTable").querySelectorAll("[data-role-user]").forEach(b=>b.onclick=()=>adminPatchUser(b.dataset.roleUser,{role:b.dataset.role==="admin"?"user":"admin"}))}

@@ -47,12 +47,26 @@
 
       <button id="newChatBtn" class="new-chat-btn"><span class="plus">＋</span><span>New chat</span><kbd>⌘K</kbd></button>
       <div class="sidebar-search"><span>⌕</span><input id="chatSearch" placeholder="Search conversations" /></div>
-      <nav id="primaryNav" class="primary-nav">
-        <button data-view="chat" class="nav-item active"><span>□</span> Chats</button>
-        <button id="adminNav" data-view="admin" class="nav-item hidden"><span>◇</span> Admin</button>
+      <nav id="primaryNav" class="sidebar-hub" aria-label="Workspace shortcuts">
+        <button id="libraryNav" data-view="library" class="hub-item">
+          <span class="hub-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H9v18H6.5A2.5 2.5 0 0 1 4 18.5v-13ZM10.5 3H14v18h-3.5V3ZM15.5 3h2A2.5 2.5 0 0 1 20 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-2V3Z"/></svg></span><span>Library</span>
+        </button>
+        <button id="projectsNav" data-view="projects" class="hub-item">
+          <span class="hub-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg></span><span>Projects</span>
+        </button>
+        <button id="scheduledNav" data-view="scheduled" class="hub-item">
+          <span class="hub-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Scheduled</span>
+        </button>
+        <button id="adminNav" data-view="admin" class="hub-item hidden">
+          <span class="hub-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 7v5c0 5 3.4 8 8 9 4.6-1 8-4 8-9V7l-8-4Z"/><path d="M9 12h6M12 9v6"/></svg></span><span>Admin</span>
+        </button>
       </nav>
-      <div class="sidebar-label"><span>Conversations</span><button id="refreshChats" class="mini-action" title="Refresh">↻</button></div>
-      <div id="chatList" class="chat-list"></div>
+      <div id="pinnedSection" class="sidebar-chat-section hidden">
+        <div class="sidebar-label"><span>Pinned</span></div>
+        <div id="pinnedChatList" class="chat-list compact"></div>
+      </div>
+      <div class="sidebar-label"><span>Recents</span><button id="refreshChats" class="mini-action" title="Refresh">↻</button></div>
+      <div id="recentChatList" class="chat-list"></div>
       <div class="sidebar-bottom">
         <button id="accountBtn" class="account-btn">
           <span id="avatar" class="avatar">C</span>
@@ -131,6 +145,44 @@
             </div>
           </div>
           <p class="composer-note">ChatFocus can make mistakes. Check important information.</p>
+        </div>
+      </section>
+
+      <section id="libraryView" class="view utility-view hidden">
+        <div class="feature-wrap">
+          <div class="feature-header">
+            <div><div class="eyebrow">YOUR CONTENT</div><h1>Library</h1><p>Every image, PDF and document you have used in ChatFocus, in one private place.</p></div>
+            <div class="feature-header-actions"><input id="librarySearch" class="feature-search" type="search" placeholder="Search files" /></div>
+          </div>
+          <div id="libraryGrid" class="library-grid"></div>
+        </div>
+      </section>
+
+      <section id="projectsView" class="view utility-view hidden">
+        <div class="feature-wrap">
+          <div class="feature-header">
+            <div><div class="eyebrow">ORGANIZE YOUR WORK</div><h1>Projects</h1><p>Group related conversations so long-running work stays together.</p></div>
+            <button id="newProjectBtn" class="primary-btn compact-primary">New project</button>
+          </div>
+          <div id="projectCreateBar" class="project-create-bar hidden"><input id="projectNameInput" placeholder="Project name" maxlength="80" /><button id="createProjectBtn" class="primary-btn compact-primary">Create</button><button id="cancelProjectBtn" class="secondary-btn">Cancel</button></div>
+          <div id="projectsGrid" class="projects-grid"></div>
+          <div id="projectDetail" class="project-detail hidden"></div>
+        </div>
+      </section>
+
+      <section id="scheduledView" class="view utility-view hidden">
+        <div class="feature-wrap">
+          <div class="feature-header">
+            <div><div class="eyebrow">AUTOMATE FOLLOW-UPS</div><h1>Scheduled</h1><p>Ask ChatFocus to run a prompt later or repeat it automatically.</p></div>
+            <button id="newScheduleBtn" class="primary-btn compact-primary">New schedule</button>
+          </div>
+          <div id="scheduleForm" class="schedule-form hidden">
+            <label><span>Prompt</span><textarea id="schedulePrompt" rows="3" placeholder="What should ChatFocus do?"></textarea></label>
+            <div class="schedule-row"><label><span>When</span><input id="scheduleRunAt" type="datetime-local" /></label><label><span>Repeat</span><select id="scheduleFrequency"><option value="once">Once</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label></div>
+            <label><span>Conversation</span><select id="scheduleChatSelect"><option value="">Create a new conversation</option></select></label>
+            <div class="schedule-actions"><button id="saveScheduleBtn" class="primary-btn compact-primary">Schedule</button><button id="cancelScheduleBtn" class="secondary-btn">Cancel</button></div>
+          </div>
+          <div id="scheduleList" class="schedule-list"></div>
         </div>
       </section>
 
