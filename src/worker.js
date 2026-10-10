@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.14";
+const CHATFOCUS_RELEASE = "V1.15";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -137,7 +137,7 @@ async function getSetting(env, key, fallback = "") {
 }
 
 async function getClientSettings(env) {
-  const rows = await env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('memory_enabled','web_search_enabled','image_detail','max_pins','service_enabled','daily_request_limit')").all();
+  const rows = await env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('memory_enabled','web_search_enabled','image_detail','max_pins','service_enabled','daily_request_limit','image_uploads_enabled','daily_image_upload_limit','max_image_upload_mb')").all();
   const map = Object.fromEntries((rows.results || []).map(r => [r.key, r.value]));
   return {
     memory_enabled: map.memory_enabled !== "false",
@@ -145,7 +145,10 @@ async function getClientSettings(env) {
     image_detail: map.image_detail || "auto",
     max_pins: Number(map.max_pins || 5),
     service_enabled: map.service_enabled !== "false",
-    daily_request_limit: Number(map.daily_request_limit || 100)
+    daily_request_limit: Number(map.daily_request_limit || 100),
+    image_uploads_enabled: map.image_uploads_enabled !== "false",
+    daily_image_upload_limit: Number(map.daily_image_upload_limit || 20),
+    max_image_upload_mb: Number(map.max_image_upload_mb || env.MAX_UPLOAD_MB || 18)
   };
 }
 
@@ -168,6 +171,21 @@ async function ensureAiAccess(env, user) {
   if (!state.service_enabled && user.role !== "admin") return { ok:false, response:json({ error:"ChatFocus is temporarily unavailable. Please try again later.", code:"service_disabled" },503), state };
   if (!state.unlimited && state.used >= state.limit) return { ok:false, response:json({ error:`You have reached today's ChatFocus limit of ${state.limit} AI requests.`, code:"daily_limit_reached", usage:state },429), state };
   return { ok:true, state };
+}
+
+async function getImageUploadState(env, user) {
+  const [settings, countRow] = await Promise.all([
+    env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('image_uploads_enabled','daily_image_upload_limit','max_image_upload_mb')").all(),
+    env.DB.prepare("SELECT COUNT(*) AS c FROM attachments WHERE user_id=? AND mime_type LIKE 'image/%' AND created_at>=date('now')").bind(user.id).first()
+  ]);
+  const map = Object.fromEntries((settings.results || []).map(r => [r.key, r.value]));
+  const globalLimit = Math.max(0, Number(map.daily_image_upload_limit || 20));
+  const override = user.daily_image_limit_override === null || user.daily_image_limit_override === undefined ? null : Math.max(0, Number(user.daily_image_limit_override));
+  const unlimited = user.role === "admin" || override === 0 || (override === null && globalLimit === 0);
+  const limit = override === null ? globalLimit : override;
+  const used = Number(countRow?.c || 0);
+  const maxMb = Math.min(100, Math.max(1, Number(map.max_image_upload_mb || env.MAX_UPLOAD_MB || 18)));
+  return { enabled: map.image_uploads_enabled !== "false", used, limit, unlimited, remaining: unlimited ? null : Math.max(0, limit - used), max_mb: maxMb };
 }
 
 async function hashPassword(password, saltB64 = null) {
@@ -349,9 +367,17 @@ async function uploadFile(request, env, user) {
   const file = form.get("file"); const chatId = String(form.get("chat_id") || "");
   if (!(file instanceof File)) return json({ error: "Choose a file to upload." }, 400);
   const chat = await getOwnedChat(env, user.id, chatId); if (!chat) return json({ error: "Chat not found" }, 404);
-  const maxMb = Number(env.MAX_UPLOAD_MB || 18); const maxBytes = maxMb * 1024 * 1024;
-  if (file.size > maxBytes) return json({ error: `Each file must be ${maxMb} MB or smaller.` }, 413);
   if (!acceptedFile(file)) return json({ error: "This file type is not supported yet." }, 415);
+  const isImage = (file.type || "").startsWith("image/");
+  let maxMb = Number(env.MAX_UPLOAD_MB || 18);
+  if (isImage) {
+    const imageState = await getImageUploadState(env, user);
+    if (!imageState.enabled && user.role !== "admin") return json({ error: "Image uploads are currently disabled by the ChatFocus administrator.", code: "image_uploads_disabled" }, 403);
+    if (!imageState.unlimited && imageState.used >= imageState.limit) return json({ error: `You have reached today's image upload limit of ${imageState.limit}.`, code: "daily_image_limit_reached", usage: imageState }, 429);
+    maxMb = imageState.max_mb;
+  }
+  const maxBytes = maxMb * 1024 * 1024;
+  if (file.size > maxBytes) return json({ error: `${isImage ? "Each image" : "Each file"} must be ${maxMb} MB or smaller.` }, 413);
   const id = crypto.randomUUID();
   const safe = file.name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(-120) || "file";
   const key = `${user.id}/${chatId}/${id}-${safe}`;
@@ -737,35 +763,39 @@ function requireAdmin(user) { return user.role === "admin" ? null : json({ error
 
 async function adminStats(env, user) {
   const deny = requireAdmin(user); if (deny) return deny;
-  const [users,activeToday,suspended,chats,messages,files,usageToday,usageAll,responseToday] = await Promise.all([
+  const [users,activeToday,suspended,chats,messages,files,imagesToday,usageToday,usageAll,responseToday] = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS c FROM users").first(),
     env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE last_seen_at>=date('now')").first(),
     env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE status='suspended'").first(),
     env.DB.prepare("SELECT COUNT(*) AS c FROM chats").first(),
     env.DB.prepare("SELECT COUNT(*) AS c FROM messages").first(),
     env.DB.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(size_bytes),0) AS bytes FROM attachments").first(),
+    env.DB.prepare("SELECT COUNT(*) AS c FROM attachments WHERE mime_type LIKE 'image/%' AND created_at>=date('now')").first(),
     env.DB.prepare("SELECT COUNT(*) AS requests,COALESCE(SUM(total_tokens),0) AS total_tokens FROM usage_events WHERE created_at>=date('now')").first(),
     env.DB.prepare("SELECT COALESCE(SUM(total_tokens),0) AS total_tokens FROM usage_events").first(),
     env.DB.prepare("SELECT COALESCE(AVG(response_time_ms),0) AS avg_ms FROM messages WHERE role='assistant' AND status='complete' AND response_time_ms IS NOT NULL AND created_at>=date('now')").first()
   ]);
   return json({ stats:{
     users:Number(users.c||0), active_today:Number(activeToday.c||0), suspended:Number(suspended.c||0), chats:Number(chats.c||0), messages:Number(messages.c||0),
-    files:Number(files.c||0), storage_bytes:Number(files.bytes||0), requests_today:Number(usageToday.requests||0), tokens_today:Number(usageToday.total_tokens||0), total_tokens:Number(usageAll.total_tokens||0), avg_response_ms:Math.round(Number(responseToday.avg_ms||0))
+    files:Number(files.c||0), storage_bytes:Number(files.bytes||0), images_today:Number(imagesToday.c||0), requests_today:Number(usageToday.requests||0), tokens_today:Number(usageToday.total_tokens||0), total_tokens:Number(usageAll.total_tokens||0), avg_response_ms:Math.round(Number(responseToday.avg_ms||0))
   }});
 }
 
 async function adminUsers(env,user,url) {
   const deny=requireAdmin(user); if(deny)return deny;
   const q=(url.searchParams.get("q")||"").trim().slice(0,100); const like=`%${q}%`;
-  const base=`SELECT u.id,u.name,u.email,u.role,u.status,u.memory_enabled,u.daily_limit_override,u.unlimited_usage,u.admin_notes,u.created_at,u.last_seen_at,
+  const base=`SELECT u.id,u.name,u.email,u.role,u.status,u.memory_enabled,u.daily_limit_override,u.daily_image_limit_override,u.unlimited_usage,u.admin_notes,u.created_at,u.last_seen_at,
     (SELECT COUNT(*) FROM usage_events ue WHERE ue.user_id=u.id AND ue.created_at>=date('now')) AS requests_today,
+    (SELECT COUNT(*) FROM attachments a WHERE a.user_id=u.id AND a.mime_type LIKE 'image/%' AND a.created_at>=date('now')) AS images_today,
     (SELECT COUNT(*) FROM chats c WHERE c.user_id=u.id) AS chat_count,
     (SELECT COUNT(*) FROM messages m WHERE m.user_id=u.id) AS message_count,
     (SELECT COALESCE(SUM(ue2.total_tokens),0) FROM usage_events ue2 WHERE ue2.user_id=u.id) AS total_tokens
     FROM users u ${q?"WHERE u.name LIKE ? OR u.email LIKE ?":""} ORDER BY u.created_at DESC LIMIT 300`;
   const rows=q?await env.DB.prepare(base).bind(like,like).all():await env.DB.prepare(base).all();
-  const globalLimit=Math.max(0,Number(await getSetting(env,"daily_request_limit","100")));
-  return json({ users:(rows.results||[]).map(u=>({ ...u, effective_daily_limit:Number(u.unlimited_usage||0)===1?0:(u.daily_limit_override===null?globalLimit:Number(u.daily_limit_override)) })), global_daily_limit:globalLimit });
+  const [globalLimitRaw,globalImageLimitRaw]=await Promise.all([getSetting(env,"daily_request_limit","100"),getSetting(env,"daily_image_upload_limit","20")]);
+  const globalLimit=Math.max(0,Number(globalLimitRaw));
+  const globalImageLimit=Math.max(0,Number(globalImageLimitRaw));
+  return json({ users:(rows.results||[]).map(u=>({ ...u, effective_daily_limit:Number(u.unlimited_usage||0)===1?0:(u.daily_limit_override===null?globalLimit:Number(u.daily_limit_override)), effective_daily_image_limit:u.role==="admin"?0:(u.daily_image_limit_override===null||u.daily_image_limit_override===undefined?globalImageLimit:Number(u.daily_image_limit_override)) })), global_daily_limit:globalLimit, global_daily_image_limit:globalImageLimit });
 }
 
 async function adminPatchUser(request,env,admin,targetId) {
@@ -781,9 +811,14 @@ async function adminPatchUser(request,env,admin,targetId) {
     const value=raw===null||raw===""?null:Math.min(100000,Math.max(0,Number(raw)||0));
     stmts.push(env.DB.prepare("UPDATE users SET daily_limit_override=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,targetId));
   }
+  if(Object.prototype.hasOwnProperty.call(body,"daily_image_limit_override")) {
+    const raw=body.daily_image_limit_override;
+    const value=raw===null||raw===""?null:Math.min(100000,Math.max(0,Number(raw)||0));
+    stmts.push(env.DB.prepare("UPDATE users SET daily_image_limit_override=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(value,targetId));
+  }
   if(typeof body.admin_notes === "string") stmts.push(env.DB.prepare("UPDATE users SET admin_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(cleanText(body.admin_notes,2000),targetId));
   if(stmts.length) await env.DB.batch(stmts);
-  return json({user:await env.DB.prepare("SELECT id,name,email,role,status,memory_enabled,daily_limit_override,unlimited_usage,admin_notes,created_at,last_seen_at FROM users WHERE id=?").bind(targetId).first()});
+  return json({user:await env.DB.prepare("SELECT id,name,email,role,status,memory_enabled,daily_limit_override,daily_image_limit_override,unlimited_usage,admin_notes,created_at,last_seen_at FROM users WHERE id=?").bind(targetId).first()});
 }
 
 async function adminGetSettings(env,user) {
@@ -793,14 +828,15 @@ async function adminGetSettings(env,user) {
 
 async function adminSaveSettings(request,env,user) {
   const deny=requireAdmin(user); if(deny)return deny; const body=await parseJson(request);
-  const allowed=new Set(["system_prompt","signups_enabled","memory_enabled","web_search_enabled","image_detail","max_pins","service_enabled","daily_request_limit","owner_rules_enabled","open_response_mode"]);
+  const allowed=new Set(["system_prompt","signups_enabled","memory_enabled","web_search_enabled","image_detail","max_pins","service_enabled","daily_request_limit","image_uploads_enabled","daily_image_upload_limit","max_image_upload_mb","owner_rules_enabled","open_response_mode"]);
   const stmts=[];
   for(const [k,v0] of Object.entries(body||{})) {
     if(!allowed.has(k)) continue; let v=String(v0);
-    if(["signups_enabled","memory_enabled","web_search_enabled","service_enabled","owner_rules_enabled","open_response_mode"].includes(k)) v=(v0===true||v0==="true")?"true":"false";
+    if(["signups_enabled","memory_enabled","web_search_enabled","service_enabled","image_uploads_enabled","owner_rules_enabled","open_response_mode"].includes(k)) v=(v0===true||v0==="true")?"true":"false";
     if(k==="image_detail"&&!['auto','low','high','original'].includes(v)) continue;
     if(k==="max_pins") v=String(Math.min(10,Math.max(1,Number(v)||5)));
-    if(k==="daily_request_limit") v=String(Math.min(100000,Math.max(0,Number(v)||0)));
+    if(k==="daily_request_limit"||k==="daily_image_upload_limit") v=String(Math.min(100000,Math.max(0,Number(v)||0)));
+    if(k==="max_image_upload_mb") v=String(Math.min(100,Math.max(1,Number(v)||18)));
     if(k==="system_prompt") v=cleanText(v,20000);
     stmts.push(env.DB.prepare(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`).bind(k,v));
   }
