@@ -1,17 +1,15 @@
-ChatFocus V1.17 — Low-Cost Vision Pipeline
+ChatFocus V1.18 Patch — Visible Image Upload Limits
 
-Upgrade from V1.16 by replacing/adding:
+Replace:
 - public/index.html
 - public/app.js
 - src/worker.js
-- migrations/0006_low_cost_vision.sql
 
-Deploy command:
-npm run db:remote && npx wrangler deploy
+No migration is required.
 
-Main savings:
-- 1600px max-edge sequential image optimization before upload
-- 4-image mobile / 6-image desktop upload batching
-- low image detail by default
-- only current-turn attachments sent to OpenAI, preventing repeat billing of old screenshots
-- normal reasoning uses low; Intelligence remains high
+After deployment, Admin Console > Limits & Access will show:
+- Image uploads on/off
+- Default daily image uploads (0 = unlimited)
+- Maximum image size (MB)
+
+This version also prevents stale cached HTML from hiding new admin controls after future updates.
