@@ -26,3 +26,6 @@ ADMIN_EMAIL = ""
 SESSION_DAYS = "30"
 MAX_UPLOAD_MB = "18"
 MAX_ATTACHMENTS = "10"
+
+[triggers]
+crons = ["*/15 * * * *"]
