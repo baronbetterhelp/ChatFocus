@@ -1,16 +1,19 @@
-ChatFocus V1.20 Patch — Session Resume & Clean Launch
+ChatFocus V1.21 — CFocus Open / NoMask Provider
 
-For an existing ChatFocus V1.19 installation, replace only:
-- public/index.html
-- public/app.js
-- public/styles.css
-- src/worker.js
+Upgrade from V1.20:
+1. Replace public/index.html, public/app.js, public/styles.css and src/worker.js.
+2. Add migrations/0008_nomask_provider.sql.
+3. Replace wrangler.toml, package.json and .dev.vars.example.
+4. In Cloudflare Worker Settings > Variables and Secrets, add a SECRET named NOMASK_API_KEY. Do not put the key in GitHub.
+5. Deploy with:
+   npm run db:remote && npx wrangler deploy
+6. Open Admin Control Center > Limits & Access > Product Defaults.
+7. Enable CFocus Open (NoMask), choose the NoMask model and save.
 
-No database migration is required.
-No wrangler.toml change is required.
+Default confirmed NoMask connection:
+- Base URL: https://nomask.ai/api/v1
+- Endpoint: /chat/completions
+- Authorization: Bearer NOMASK_API_KEY
+- Default model: qwen_3.8_uncensored
 
-What this fixes:
-- Reopen the exact last conversation for the current account.
-- If there is no remembered chat, open a fresh New chat instead of a pinned/random conversation.
-- Stop the login screen from flashing before the already-authenticated app loads.
-- Use a neutral ChatFocus launch gate while validating the existing session.
+V1.21 keeps CFocus 1.0 / GPT-6 Luna as the multimodal mode. CFocus Open is text-only until NoMask image/file request syntax is confirmed.

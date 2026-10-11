@@ -22,6 +22,8 @@ bucket_name = "chatfocus-files"
 [vars]
 APP_NAME = "ChatFocus"
 OPENAI_MODEL = "gpt-6-luna"
+NOMASK_BASE_URL = "https://nomask.ai/api/v1"
+NOMASK_MODEL = "qwen_3.8_uncensored"
 ADMIN_EMAIL = ""
 SESSION_DAYS = "30"
 MAX_UPLOAD_MB = "18"
