@@ -280,13 +280,18 @@
                 <div class="card-head"><div><h2>Product Defaults</h2><p>Shared interface and multimodal behavior.</p></div></div>
                 <div class="settings-form">
                   <label><span>Primary model</span><input id="adminModel" disabled /></label>
-                  <div class="setting-row admin-feature-row"><div><strong>CFocus Open</strong><small>Expose the alternate text provider to customers. Your owner rules still apply.</small></div><input id="adminNoMaskEnabled" type="checkbox" /></div>
-                  <label><span>CFocus Open provider</span><select id="adminOpenProvider"><option value="groq">Groq</option><option value="nomask">NoMask</option></select><small class="field-help">Groq is recommended when GROQ_API_KEY is configured. You can switch back to NoMask at any time.</small></label>
-                  <label><span>Groq model</span><input id="adminGroqModel" value="openai/gpt-oss-20b" /><small class="field-help">Default: openai/gpt-oss-20b.</small></label>
-                  <label><span>NoMask model</span><select id="adminNoMaskModel"><option value="qwen_3.8_uncensored">Qwen 3.8 Uncensored</option><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="glm-5.3-flash-uncensored">GLM 5.3 Flash Uncensored</option><option value="mimo-v2.6-flash-uncensored">MiMo V2.6 Flash Uncensored</option></select></label>
-                  <label><span>Public mode name</span><input id="adminNoMaskName" maxlength="60" value="CFocus Open" /></label>
-                  <div id="adminGroqStatus" class="provider-status-card"><strong>Groq API</strong><span>Checking configuration…</span></div>
-                  <div id="adminNoMaskStatus" class="provider-status-card"><strong>NoMask API</strong><span>Checking configuration…</span></div>
+                  <div class="provider-admin-block">
+                    <div class="setting-row admin-feature-row"><div><strong>CFocus Groq</strong><small>Enable the Groq text mode for customers independently of NoMask.</small></div><input id="adminGroqEnabled" type="checkbox" /></div>
+                    <label><span>Groq public mode name</span><input id="adminGroqName" maxlength="60" value="CFocus Groq" /></label>
+                    <label><span>Groq model</span><input id="adminGroqModel" value="openai/gpt-oss-20b" /><small class="field-help">Default: openai/gpt-oss-20b.</small></label>
+                    <div id="adminGroqStatus" class="provider-status-card"><strong>Groq API</strong><span>Checking configuration…</span></div>
+                  </div>
+                  <div class="provider-admin-block">
+                    <div class="setting-row admin-feature-row"><div><strong>CFocus NoMask</strong><small>Enable NoMask separately only when you want to use and fund that provider.</small></div><input id="adminNoMaskEnabled" type="checkbox" /></div>
+                    <label><span>NoMask public mode name</span><input id="adminNoMaskName" maxlength="60" value="CFocus NoMask" /></label>
+                    <label><span>NoMask model</span><select id="adminNoMaskModel"><option value="qwen_3.8_uncensored">Qwen 3.8 Uncensored</option><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="glm-5.3-flash-uncensored">GLM 5.3 Flash Uncensored</option><option value="mimo-v2.6-flash-uncensored">MiMo V2.6 Flash Uncensored</option></select></label>
+                    <div id="adminNoMaskStatus" class="provider-status-card"><strong>NoMask API</strong><span>Checking configuration…</span></div>
+                  </div>
                   <label><span>Image analysis detail</span><select id="adminImageDetail"><option value="low">Low — economy (recommended)</option><option value="auto">Auto</option><option value="high">High</option><option value="original">Original — highest cost</option></select><small class="field-help">Low is the CallFocus-style default. Use higher detail only when very small visual details are essential.</small></label>
                   <label><span>Maximum pinned chats</span><input id="adminPins" type="number" min="1" max="10" /></label>
                   <button id="saveAdminProduct" class="primary-btn">Save product defaults</button>
@@ -425,8 +430,9 @@
       <div class="model-picker-handle"></div>
       <header><div><span class="overview-kicker">CHAT MODE</span><h3 id="modelPickerTitle">Choose ChatFocus mode</h3></div><button id="closeModelPicker" class="icon-btn" aria-label="Close">×</button></header>
       <button class="model-choice active" data-ai-mode="standard"><span class="model-choice-icon">◉</span><span><strong>CFocus 1.0</strong><small>GPT-6 Luna · images, files, web search and Intelligence</small></span><b>✓</b></button>
-      <button class="model-choice" data-ai-mode="open"><span class="model-choice-icon open">◇</span><span><strong id="openModeName">CFocus Open</strong><small>Groq / NoMask · alternate text mode</small></span><b>✓</b></button>
-      <p id="openModeNote" class="model-picker-note">CFocus Open is text-only in this release. Uploading an image or file switches the chat back to CFocus 1.0.</p>
+      <button class="model-choice" data-ai-mode="groq"><span class="model-choice-icon open">G</span><span><strong id="groqModeName">CFocus Groq</strong><small>Groq · fast alternate text mode</small></span><b>✓</b></button>
+      <button class="model-choice" data-ai-mode="nomask"><span class="model-choice-icon open">N</span><span><strong id="nomaskModeName">CFocus NoMask</strong><small>NoMask · separate alternate text mode</small></span><b>✓</b></button>
+      <p class="model-picker-note">Groq and NoMask are independent. Your administrator can enable either one, both, or neither. Both are text-only in this release; uploading an image or file switches the chat back to CFocus 1.0.</p>
     </section>
   </div>
 
