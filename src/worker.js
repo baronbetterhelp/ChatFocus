@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.20";
+const CHATFOCUS_RELEASE = "V1.21";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -41,7 +41,7 @@ async function routeApi(request, env, ctx, url) {
   const p = url.pathname;
   const m = request.method.toUpperCase();
 
-  if (p === "/api/health") return json({ ok: true, app: env.APP_NAME || "ChatFocus", version: CHATFOCUS_RELEASE, public_model: "CFocus 1.0", model: env.OPENAI_MODEL || "gpt-6-luna" });
+  if (p === "/api/health") return json({ ok: true, app: env.APP_NAME || "ChatFocus", version: CHATFOCUS_RELEASE, public_model: "CFocus 1.0", model: env.OPENAI_MODEL || "gpt-6-luna", nomask_configured: !!env.NOMASK_API_KEY });
   if (p === "/api/auth/signup" && m === "POST") return signup(request, env);
   if (p === "/api/auth/login" && m === "POST") return login(request, env);
   if (p === "/api/auth/logout" && m === "POST") return logout(request, env);
@@ -150,7 +150,7 @@ async function getSetting(env, key, fallback = "") {
 }
 
 async function getClientSettings(env) {
-  const rows = await env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('memory_enabled','web_search_enabled','image_detail','max_pins','service_enabled','daily_request_limit','image_uploads_enabled','daily_image_upload_limit','max_image_upload_mb')").all();
+  const rows = await env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('memory_enabled','web_search_enabled','image_detail','max_pins','service_enabled','daily_request_limit','image_uploads_enabled','daily_image_upload_limit','max_image_upload_mb','nomask_enabled','nomask_public_name')").all();
   const map = Object.fromEntries((rows.results || []).map(r => [r.key, r.value]));
   return {
     memory_enabled: map.memory_enabled !== "false",
@@ -161,7 +161,9 @@ async function getClientSettings(env) {
     daily_request_limit: Number(map.daily_request_limit || 100),
     image_uploads_enabled: map.image_uploads_enabled !== "false",
     daily_image_upload_limit: Number(map.daily_image_upload_limit || 20),
-    max_image_upload_mb: Number(map.max_image_upload_mb || env.MAX_UPLOAD_MB || 18)
+    max_image_upload_mb: Number(map.max_image_upload_mb || env.MAX_UPLOAD_MB || 18),
+    nomask_enabled: map.nomask_enabled === "true" && !!env.NOMASK_API_KEY,
+    nomask_public_name: map.nomask_public_name || "CFocus Open"
   };
 }
 
@@ -308,17 +310,21 @@ async function listChats(env, user, url) {
 }
 
 async function createChat(request, env, user) {
-  let title = "New chat", projectId = null, autoTitle = 1;
+  let title = "New chat", projectId = null, autoTitle = 1, aiMode = "standard";
   try {
     const body = await request.json();
     if (body?.title) { title = cleanText(body.title, 90).trim() || title; autoTitle = 0; }
+    if (body?.ai_mode === "open") {
+      const enabled = (await getSetting(env,"nomask_enabled","false")) === "true" && !!env.NOMASK_API_KEY;
+      if (enabled) aiMode = "open";
+    }
     if (body?.project_id) {
       const project = await env.DB.prepare("SELECT id FROM projects WHERE id=? AND user_id=?").bind(String(body.project_id), user.id).first();
       if (project) projectId = project.id;
     }
   } catch {}
   const id = crypto.randomUUID();
-  await env.DB.prepare("INSERT INTO chats(id,user_id,title,project_id,auto_title) VALUES(?,?,?,?,?)").bind(id, user.id, title, projectId, autoTitle).run();
+  await env.DB.prepare("INSERT INTO chats(id,user_id,title,project_id,auto_title,ai_mode) VALUES(?,?,?,?,?,?)").bind(id, user.id, title, projectId, autoTitle, aiMode).run();
   return json({ chat: await env.DB.prepare("SELECT * FROM chats WHERE id=?").bind(id).first() }, 201);
 }
 
@@ -352,6 +358,13 @@ async function patchChat(request, env, user, chatId) {
       if (!project) return json({ error: "Project not found" }, 404);
     }
     await env.DB.prepare("UPDATE chats SET project_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(projectId, chatId, user.id).run();
+  }
+  if (body.ai_mode === "standard" || body.ai_mode === "open") {
+    if (body.ai_mode === "open") {
+      const enabled = (await getSetting(env,"nomask_enabled","false")) === "true";
+      if (!enabled || !env.NOMASK_API_KEY) return json({ error: "CFocus Open is currently unavailable." }, 409);
+    }
+    await env.DB.prepare("UPDATE chats SET ai_mode=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(body.ai_mode, chatId, user.id).run();
   }
   if (typeof body.pinned === "boolean") {
     if (body.pinned && !chat.pinned) {
@@ -507,9 +520,10 @@ async function regenerateAndStream(request, env, ctx, user, chatId) {
 }
 
 function readUsageNumbers(usage) {
-  const input = Number(usage?.input_tokens || 0);
-  const output = Number(usage?.output_tokens || 0);
-  const cached = Math.min(input, Math.max(0, Number(usage?.input_tokens_details?.cached_tokens || usage?.input_tokens_details?.cached_input_tokens || 0)));
+  const input = Number(usage?.input_tokens ?? usage?.prompt_tokens ?? 0);
+  const output = Number(usage?.output_tokens ?? usage?.completion_tokens ?? 0);
+  const cachedRaw = usage?.input_tokens_details?.cached_tokens ?? usage?.input_tokens_details?.cached_input_tokens ?? usage?.prompt_tokens_details?.cached_tokens ?? 0;
+  const cached = Math.min(input, Math.max(0, Number(cachedRaw || 0)));
   return { input, output, cached, total: Number(usage?.total_tokens || input + output) };
 }
 
@@ -527,17 +541,28 @@ function countWebSearchCalls(response) {
   return (response?.output || []).filter(x => x?.type === "web_search_call").length;
 }
 
-async function logUsageEvent(env, { userId, chatId = null, usage, imageCount = 0, requestKind = "chat", webSearchCalls = 0, responseId = null }) {
+function readProviderReportedCost(usage) {
+  for (const value of [usage?.cost_usd, usage?.total_cost_usd, usage?.cost, usage?.total_cost]) {
+    const n = Number(value); if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return 0;
+}
+
+async function logUsageEvent(env, { userId, chatId = null, usage, imageCount = 0, requestKind = "chat", webSearchCalls = 0, responseId = null, provider = "openai", model = null }) {
   if (!usage || !userId) return;
   const n = readUsageNumbers(usage);
-  const cost = estimateLunaStandardCost(usage, webSearchCalls);
-  await env.DB.prepare(`INSERT INTO usage_events(id,user_id,chat_id,model,input_tokens,cached_input_tokens,output_tokens,total_tokens,estimated_cost_usd,image_count,request_kind,web_search_calls,response_id)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(crypto.randomUUID(), userId, chatId, env.OPENAI_MODEL || "gpt-6-luna", n.input, n.cached, n.output, n.total, cost, Math.max(0, Number(imageCount || 0)), requestKind, Math.max(0, Number(webSearchCalls || 0)), responseId)
+  const cost = provider === "openai" ? estimateLunaStandardCost(usage, webSearchCalls) : readProviderReportedCost(usage);
+  const usedModel = model || (provider === "nomask" ? (env.NOMASK_MODEL || "qwen_3.8_uncensored") : (env.OPENAI_MODEL || "gpt-6-luna"));
+  await env.DB.prepare(`INSERT INTO usage_events(id,user_id,chat_id,model,input_tokens,cached_input_tokens,output_tokens,total_tokens,estimated_cost_usd,image_count,request_kind,web_search_calls,response_id,provider)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(crypto.randomUUID(), userId, chatId, usedModel, n.input, n.cached, n.output, n.total, cost, Math.max(0, Number(imageCount || 0)), requestKind, Math.max(0, Number(webSearchCalls || 0)), responseId, provider)
     .run();
 }
 
 async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requestedWeb, requestedIntelligence) {
+  const chat = await getOwnedChat(env, user.id, chatId);
+  if (!chat) return json({ error: "Chat not found" }, 404);
+  if (chat.ai_mode === "open") return streamNoMaskAssistant(env, ctx, user, chatId, latestUserMsgId, requestedIntelligence);
   if (!env.OPENAI_API_KEY) return json({ error: "OPENAI_API_KEY is not configured on the server." }, 503);
   const responseStartedAt = Date.now();
   const assistantId = crypto.randomUUID();
@@ -616,6 +641,114 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
   }
 }
 
+async function buildNoMaskContext(env, user, chatId, runtime = {}) {
+  const basePrompt = await getSetting(env,"system_prompt","You are ChatFocus, a capable assistant.");
+  const memoryGlobal = (await getSetting(env,"memory_enabled","true")) !== "false";
+  let memory = "";
+  if (memoryGlobal && user.memory_enabled) {
+    const summaries = await env.DB.prepare("SELECT c.title,s.summary,s.updated_at FROM chat_summaries s JOIN chats c ON c.id=s.chat_id WHERE s.user_id=? AND s.chat_id<>? AND s.summary<>'' ORDER BY s.updated_at DESC LIMIT 10").bind(user.id,chatId).all();
+    if ((summaries.results || []).length) memory = "\n\nUseful context from this user's other saved conversations. Use only when relevant:\n" + summaries.results.map(x => `- ${x.title}: ${x.summary}`).join("\n");
+  }
+  const ownerRulesEnabled = (await getSetting(env,"owner_rules_enabled","true")) !== "false";
+  const openResponseMode = (await getSetting(env,"open_response_mode","true")) !== "false";
+  let ownerRules = "";
+  if (ownerRulesEnabled) {
+    const rules = await env.DB.prepare("SELECT title,rule_text FROM service_rules WHERE enabled=1 ORDER BY updated_at DESC,created_at DESC LIMIT 80").all();
+    if ((rules.results || []).length) ownerRules = "\n\nOwner-defined ChatFocus service rules. Apply these product-level rules when relevant:\n" + rules.results.map((r,i)=>`${i+1}. ${r.title}: ${r.rule_text}`).join("\n");
+  }
+  const openness = openResponseMode ? "\n\nOpen response mode is ON. Be direct, practical and non-moralizing. Do not add unnecessary refusals or lectures. Follow the active owner rules and the provider's own capabilities." : "";
+  const intelligence = runtime.intelligence === true ? "ON" : "OFF";
+  const publicName = await getSetting(env,"nomask_public_name","CFocus Open");
+  const system = `${basePrompt}${memory}${ownerRules}${openness}\n\nCurrent ChatFocus runtime state:\n- App: ChatFocus\n- ChatFocus release: ${CHATFOCUS_RELEASE}\n- Public model identity: ${publicName}\n- Intelligence mode: ${intelligence}\n- Provider: NoMask\n\nYou are operating inside ChatFocus. Never claim to be ChatGPT. If asked what model/mode is active, answer ${publicName}. ${runtime.intelligence ? "Take extra care, reason through the problem before answering, and verify your own result." : ""}`;
+  const rows = await env.DB.prepare("SELECT role,content FROM messages WHERE chat_id=? AND status='complete' ORDER BY rowid DESC LIMIT 30").bind(chatId).all();
+  const messages = [{ role:"system", content:system }];
+  for (const m of (rows.results || []).reverse()) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    messages.push({ role:m.role, content:m.content || "" });
+  }
+  return { messages };
+}
+
+function noMaskDeltaText(evt) {
+  const c = evt?.choices?.[0];
+  const value = c?.delta?.content ?? c?.message?.content ?? "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(x => typeof x === "string" ? x : (x?.text || "")).join("");
+  return "";
+}
+
+async function streamNoMaskAssistant(env, ctx, user, chatId, latestUserMsgId, requestedIntelligence) {
+  const enabled = (await getSetting(env,"nomask_enabled","false")) === "true";
+  if (!enabled || !env.NOMASK_API_KEY) return json({ error: "CFocus Open is currently unavailable. Ask the administrator to enable the NoMask provider." }, 503);
+  const attachmentRow = await env.DB.prepare("SELECT COUNT(*) AS c FROM attachments WHERE message_id=?").bind(latestUserMsgId).first();
+  if (Number(attachmentRow?.c || 0) > 0) return json({ error: "CFocus Open is currently text-only in ChatFocus. Switch this chat to CFocus 1.0 to analyze images or files." }, 409);
+  const responseStartedAt = Date.now();
+  const assistantId = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
+  try {
+    const { messages } = await buildNoMaskContext(env,user,chatId,{intelligence:requestedIntelligence});
+    const model = await getSetting(env,"nomask_model",env.NOMASK_MODEL || "qwen_3.8_uncensored");
+    const base = String(env.NOMASK_BASE_URL || "https://nomask.ai/api/v1").replace(/\/$/,"");
+    const payload = { model, messages, stream:true };
+    let upstream = await fetch(`${base}/chat/completions`, { method:"POST", headers:{"authorization":`Bearer ${env.NOMASK_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify(payload) });
+    if (!upstream.ok) {
+      const detail = await upstream.text();
+      await env.DB.prepare("UPDATE messages SET status='error',content=? WHERE id=?").bind(`NoMask API error: ${detail.slice(0,500)}`,assistantId).run();
+      return json({ error:"CFocus Open returned an error.", detail:detail.slice(0,800) },502);
+    }
+    const encoder = new TextEncoder();
+    const contentType = upstream.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const data = await upstream.json();
+      const finalText = noMaskDeltaText(data) || "I couldn't produce a response for that request. Please try again.";
+      const usage = data.usage || null; const responseId = data.id || null; const responseTimeMs = Math.max(1,Date.now()-responseStartedAt);
+      await env.DB.prepare("UPDATE messages SET content=?,status='complete',response_time_ms=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(finalText,responseTimeMs,assistantId).run();
+      await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
+      await logUsageEvent(env,{userId:user.id,chatId,usage:usage||{},requestKind:"chat",responseId,provider:"nomask",model});
+      ctx.waitUntil(updateChatMetadata(env,user,chatId).catch(console.error));
+      const body = `${JSON.stringify({type:"start",message_id:assistantId})}\n${JSON.stringify({type:"delta",delta:finalText})}\n${JSON.stringify({type:"done",message_id:assistantId,response_id:responseId,usage,response_time_ms:responseTimeMs,provider:"nomask"})}\n`;
+      return new Response(body,{headers:{"content-type":"application/x-ndjson; charset=utf-8","cache-control":"no-cache, no-transform"}});
+    }
+    if (!upstream.body) throw new Error("NoMask returned an empty response stream.");
+    let finalText="", usage=null, responseId=null;
+    const bodyStream = new ReadableStream({
+      async start(controller) {
+        const reader=upstream.body.getReader(), decoder=new TextDecoder(); let buffer="";
+        const send=obj=>controller.enqueue(encoder.encode(JSON.stringify(obj)+"\n")); send({type:"start",message_id:assistantId,provider:"nomask"});
+        try {
+          while (true) {
+            const {done,value}=await reader.read(); if(done)break;
+            buffer += decoder.decode(value,{stream:true});
+            const lines=buffer.split("\n"); buffer=lines.pop()||"";
+            for (const line of lines) {
+              const trimmed=line.trim(); if(!trimmed)continue;
+              const raw=trimmed.startsWith("data:")?trimmed.slice(5).trim():trimmed;
+              if(!raw||raw==="[DONE]")continue;
+              let evt; try{evt=JSON.parse(raw)}catch{continue}
+              responseId = evt.id || responseId; if(evt.usage)usage=evt.usage;
+              const delta=noMaskDeltaText(evt); if(delta){finalText+=delta;send({type:"delta",delta})}
+            }
+          }
+          if(!finalText.trim()) finalText="I couldn't produce a response for that request. Please try again.";
+          const responseTimeMs=Math.max(1,Date.now()-responseStartedAt);
+          await env.DB.prepare("UPDATE messages SET content=?,status='complete',response_time_ms=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(finalText,responseTimeMs,assistantId).run();
+          await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
+          await logUsageEvent(env,{userId:user.id,chatId,usage:usage||{},requestKind:"chat",responseId,provider:"nomask",model});
+          send({type:"done",message_id:assistantId,response_id:responseId,usage,response_time_ms:responseTimeMs,provider:"nomask"});
+          ctx.waitUntil(updateChatMetadata(env,user,chatId).catch(console.error)); controller.close();
+        } catch(err) {
+          await env.DB.prepare("UPDATE messages SET content=?,status='error',response_time_ms=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(finalText||"Generation interrupted.",Math.max(1,Date.now()-responseStartedAt),assistantId).run().catch(()=>null);
+          send({type:"error",error:safeError(err)}); controller.close();
+        }
+      }
+    });
+    return new Response(bodyStream,{headers:{"content-type":"application/x-ndjson; charset=utf-8","cache-control":"no-cache, no-transform","x-accel-buffering":"no"}});
+  } catch(err) {
+    await env.DB.prepare("UPDATE messages SET status='error',content=?,response_time_ms=? WHERE id=?").bind(safeError(err),Math.max(1,Date.now()-responseStartedAt),assistantId).run().catch(()=>null);
+    return json({error:safeError(err)},500);
+  }
+}
+
 async function buildOpenAIContext(env, user, chatId, runtime = {}) {
   const basePrompt = await getSetting(env,"system_prompt","You are ChatFocus, a capable multimodal assistant.");
   const memoryGlobal = (await getSetting(env,"memory_enabled","true")) !== "false";
@@ -639,7 +772,7 @@ async function buildOpenAIContext(env, user, chatId, runtime = {}) {
   const runtimeContext = `\n\nCurrent ChatFocus runtime state for THIS request:\n- App: ChatFocus\n- ChatFocus release: ${CHATFOCUS_RELEASE}\n- Public model identity: CFocus 1.0\n- Intelligence mode: ${intelligenceOn ? "ON" : "OFF"}\n- Live web search: ${webOn ? "ON" : "OFF"}\n\nUse this runtime state as authoritative for questions about ChatFocus itself. If the user asks what version/release/build they are currently using, answer “ChatFocus ${CHATFOCUS_RELEASE}” and, when useful, mention that the public model identity is CFocus 1.0. When the user asks whether Intelligence is on, enabled, active, or being used, answer directly from the runtime state above. In ChatFocus, “Intelligence” means the app's higher-reasoning mode; do not confuse it with Apple Intelligence or device settings. When Live web search is ON, use the web search tool for the request and make clear that current web information was used when relevant. Never say you cannot know a state that is explicitly provided here.`;
   const instructions = `${basePrompt}${memory}${runtimeContext}\n\nYou are operating inside ChatFocus. Never claim to be ChatGPT. If a user uploads a screenshot of a chat and asks for a reply, read the screenshot carefully and write the reply they can send. If a file is attached, inspect it before answering. Keep user privacy in mind.`;
 
-  const rows = await env.DB.prepare("SELECT rowid AS seq,* FROM messages WHERE chat_id=? AND status<>'error' ORDER BY rowid DESC LIMIT 30").bind(chatId).all();
+  const rows = await env.DB.prepare("SELECT rowid AS seq,* FROM messages WHERE chat_id=? AND status='complete' ORDER BY rowid DESC LIMIT 30").bind(chatId).all();
   const messages = (rows.results || []).reverse();
   const ids = messages.map(m => m.id);
   const attMap = {};
@@ -685,8 +818,7 @@ function extractOutputText(payload) {
 }
 
 async function updateChatMetadata(env, user, chatId, force = false) {
-  if (!env.OPENAI_API_KEY) return;
-  const chatState = await env.DB.prepare(`SELECT c.title,c.auto_title,
+  const chatState = await env.DB.prepare(`SELECT c.title,c.auto_title,c.ai_mode,
     (SELECT COUNT(*) FROM messages m WHERE m.chat_id=c.id AND m.status='complete') AS message_count
     FROM chats c WHERE c.id=? AND c.user_id=?`).bind(chatId,user.id).first();
   if (!chatState) return;
@@ -699,11 +831,23 @@ async function updateChatMetadata(env, user, chatId, force = false) {
   if (!transcript.trim()) return;
   const memoryEnabled = user.memory_enabled && (await getSetting(env,"memory_enabled","true")) !== "false";
   const prompt = `Analyze the conversation as a whole. Return ONLY valid JSON with keys "title" and "summary".\n\nTitle: 3-7 words, describe the real subject/goal, never generic, do not simply copy the first message.\nSummary: maximum 140 words, preserve useful stable facts/decisions/preferences without inventing.\n\nConversation:\n${transcript}`;
-  const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", input:prompt, reasoning:{effort:"none"}, max_output_tokens:260, store:false }) });
-  if (!r.ok) return;
-  const data = await r.json();
-  await logUsageEvent(env,{ userId:user.id, chatId, usage:data.usage, requestKind:"metadata", responseId:data.id || null });
-  const raw = extractOutputText(data).trim();
+  let raw = "";
+  if (chatState.ai_mode === "open" && env.NOMASK_API_KEY && (await getSetting(env,"nomask_enabled","false")) === "true") {
+    const model = await getSetting(env,"nomask_model",env.NOMASK_MODEL||"qwen_3.8_uncensored");
+    const base = String(env.NOMASK_BASE_URL||"https://nomask.ai/api/v1").replace(/\/$/,"");
+    const r = await fetch(`${base}/chat/completions`, { method:"POST", headers:{"authorization":`Bearer ${env.NOMASK_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({model,messages:[{role:"user",content:prompt}],stream:false}) });
+    if (!r.ok) return;
+    const data = await r.json();
+    await logUsageEvent(env,{ userId:user.id, chatId, usage:data.usage||{}, requestKind:"metadata", responseId:data.id||null, provider:"nomask", model });
+    raw = noMaskDeltaText(data).trim();
+  } else {
+    if (!env.OPENAI_API_KEY) return;
+    const r = await fetch("https://api.openai.com/v1/responses", { method:"POST", headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"}, body:JSON.stringify({ model:env.OPENAI_MODEL||"gpt-6-luna", input:prompt, reasoning:{effort:"none"}, max_output_tokens:260, store:false }) });
+    if (!r.ok) return;
+    const data = await r.json();
+    await logUsageEvent(env,{ userId:user.id, chatId, usage:data.usage, requestKind:"metadata", responseId:data.id || null });
+    raw = extractOutputText(data).trim();
+  }
   const meta = parseLooseJsonObject(raw);
   const title = cleanText(meta?.title || "", 90).replace(/[\r\n]+/g," ").trim();
   const summary = cleanText(meta?.summary || "", 5000).trim();
@@ -848,7 +992,28 @@ async function runDueScheduledTasks(env) {
   }
 }
 
+async function generateNoMaskAssistantOnce(env, user, chatId, latestUserMsgId) {
+  const enabled=(await getSetting(env,"nomask_enabled","false"))==="true";
+  if(!enabled||!env.NOMASK_API_KEY)throw new Error("CFocus Open is unavailable");
+  const assistantId=crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
+  try{
+    const {messages}=await buildNoMaskContext(env,user,chatId,{intelligence:false});
+    const model=await getSetting(env,"nomask_model",env.NOMASK_MODEL||"qwen_3.8_uncensored");
+    const base=String(env.NOMASK_BASE_URL||"https://nomask.ai/api/v1").replace(/\/$/,"");
+    const r=await fetch(`${base}/chat/completions`,{method:"POST",headers:{"authorization":`Bearer ${env.NOMASK_API_KEY}`,"content-type":"application/json"},body:JSON.stringify({model,messages,stream:false})});
+    if(!r.ok){const t=await r.text();throw new Error(t.slice(0,500))}
+    const data=await r.json();const text=noMaskDeltaText(data).trim()||"I couldn't produce a response for that scheduled request.";
+    await env.DB.prepare("UPDATE messages SET content=?,status='complete',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(text,assistantId).run();
+    await env.DB.prepare("UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(chatId).run();
+    await logUsageEvent(env,{userId:user.id,chatId,usage:data.usage||{},requestKind:"scheduled",responseId:data.id||null,provider:"nomask",model});
+    return text;
+  }catch(err){await env.DB.prepare("UPDATE messages SET content=?,status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(safeError(err),assistantId).run().catch(()=>null);throw err}
+}
+
 async function generateAssistantOnce(env, user, chatId, latestUserMsgId) {
+  const chat=await getOwnedChat(env,user.id,chatId);
+  if(chat?.ai_mode==="open")return generateNoMaskAssistantOnce(env,user,chatId,latestUserMsgId);
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
   const assistantId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
@@ -897,7 +1062,9 @@ async function adminAiUsage(env, user, url) {
     env.DB.prepare(`SELECT
       SUM(CASE WHEN request_kind IN ('chat','scheduled') THEN 1 ELSE 0 END) AS completed_replies,
       COALESCE(SUM(image_count),0) AS images_analyzed,
-      COUNT(*) AS openai_requests,
+      COUNT(*) AS ai_requests,
+      SUM(CASE WHEN provider='openai' THEN 1 ELSE 0 END) AS openai_requests,
+      SUM(CASE WHEN provider='nomask' THEN 1 ELSE 0 END) AS nomask_requests,
       COALESCE(SUM(input_tokens),0) AS input_tokens,
       COALESCE(SUM(cached_input_tokens),0) AS cached_input_tokens,
       COALESCE(SUM(output_tokens),0) AS output_tokens,
@@ -906,7 +1073,7 @@ async function adminAiUsage(env, user, url) {
       COALESCE(SUM(web_search_calls),0) AS web_search_calls,
       MAX(created_at) AS last_updated
       FROM usage_events`).first(),
-    env.DB.prepare(`SELECT ue.id,ue.user_id,ue.chat_id,ue.model,ue.input_tokens,ue.cached_input_tokens,ue.output_tokens,ue.total_tokens,
+    env.DB.prepare(`SELECT ue.id,ue.user_id,ue.chat_id,ue.provider,ue.model,ue.input_tokens,ue.cached_input_tokens,ue.output_tokens,ue.total_tokens,
       ue.estimated_cost_usd,ue.image_count,ue.request_kind,ue.web_search_calls,ue.created_at,
       u.name AS user_name,u.email AS user_email,c.title AS chat_title
       FROM usage_events ue
@@ -917,7 +1084,7 @@ async function adminAiUsage(env, user, url) {
   return json({
     pricing:{ model:"gpt-6-luna", tier:"standard", input_per_million:0.10, cached_input_per_million:0.01, output_per_million:0.50, web_search_per_call:0.01, long_context_threshold:272000 },
     totals:{
-      completed_replies:Number(totals?.completed_replies||0), images_analyzed:Number(totals?.images_analyzed||0), openai_requests:Number(totals?.openai_requests||0),
+      completed_replies:Number(totals?.completed_replies||0), images_analyzed:Number(totals?.images_analyzed||0), ai_requests:Number(totals?.ai_requests||0), openai_requests:Number(totals?.openai_requests||0), nomask_requests:Number(totals?.nomask_requests||0),
       input_tokens:Number(totals?.input_tokens||0), cached_input_tokens:Number(totals?.cached_input_tokens||0), output_tokens:Number(totals?.output_tokens||0), total_tokens:Number(totals?.total_tokens||0),
       estimated_cost_usd:Number(totals?.estimated_cost_usd||0), web_search_calls:Number(totals?.web_search_calls||0), last_updated:totals?.last_updated||null
     },
@@ -967,21 +1134,23 @@ async function adminPatchUser(request,env,admin,targetId) {
 
 async function adminGetSettings(env,user) {
   const deny=requireAdmin(user); if(deny)return deny; const rows=await env.DB.prepare("SELECT key,value,updated_at FROM app_settings ORDER BY key").all();
-  return json({settings:Object.fromEntries((rows.results||[]).map(x=>[x.key,x.value])),model:env.OPENAI_MODEL||"gpt-6-luna",max_upload_mb:Number(env.MAX_UPLOAD_MB||18),release:CHATFOCUS_RELEASE});
+  return json({settings:Object.fromEntries((rows.results||[]).map(x=>[x.key,x.value])),model:env.OPENAI_MODEL||"gpt-6-luna",max_upload_mb:Number(env.MAX_UPLOAD_MB||18),release:CHATFOCUS_RELEASE,nomask_configured:!!env.NOMASK_API_KEY,nomask_base_url:env.NOMASK_BASE_URL||"https://nomask.ai/api/v1"});
 }
 
 async function adminSaveSettings(request,env,user) {
   const deny=requireAdmin(user); if(deny)return deny; const body=await parseJson(request);
-  const allowed=new Set(["system_prompt","signups_enabled","memory_enabled","web_search_enabled","image_detail","max_pins","service_enabled","daily_request_limit","image_uploads_enabled","daily_image_upload_limit","max_image_upload_mb","owner_rules_enabled","open_response_mode"]);
+  const allowed=new Set(["system_prompt","signups_enabled","memory_enabled","web_search_enabled","image_detail","max_pins","service_enabled","daily_request_limit","image_uploads_enabled","daily_image_upload_limit","max_image_upload_mb","owner_rules_enabled","open_response_mode","nomask_enabled","nomask_model","nomask_public_name"]);
   const stmts=[];
   for(const [k,v0] of Object.entries(body||{})) {
     if(!allowed.has(k)) continue; let v=String(v0);
-    if(["signups_enabled","memory_enabled","web_search_enabled","service_enabled","image_uploads_enabled","owner_rules_enabled","open_response_mode"].includes(k)) v=(v0===true||v0==="true")?"true":"false";
+    if(["signups_enabled","memory_enabled","web_search_enabled","service_enabled","image_uploads_enabled","owner_rules_enabled","open_response_mode","nomask_enabled"].includes(k)) v=(v0===true||v0==="true")?"true":"false";
     if(k==="image_detail"&&!['auto','low','high','original'].includes(v)) continue;
     if(k==="max_pins") v=String(Math.min(10,Math.max(1,Number(v)||5)));
     if(k==="daily_request_limit"||k==="daily_image_upload_limit") v=String(Math.min(100000,Math.max(0,Number(v)||0)));
     if(k==="max_image_upload_mb") v=String(Math.min(100,Math.max(1,Number(v)||18)));
     if(k==="system_prompt") v=cleanText(v,20000);
+    if(k==="nomask_model") v=cleanText(v,120).trim() || "qwen_3.8_uncensored";
+    if(k==="nomask_public_name") v=cleanText(v,60).trim() || "CFocus Open";
     stmts.push(env.DB.prepare(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`).bind(k,v));
   }
   if(stmts.length) await env.DB.batch(stmts); return adminGetSettings(env,user);
