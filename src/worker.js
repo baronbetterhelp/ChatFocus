@@ -1,4 +1,4 @@
-const CHATFOCUS_RELEASE = "V1.22";
+const CHATFOCUS_RELEASE = "V1.23";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const TEXT_FILE_MIMES = new Set([
   "text/plain", "text/csv", "text/tsv", "text/markdown", "text/html", "text/css",
@@ -42,8 +42,8 @@ async function routeApi(request, env, ctx, url) {
   const m = request.method.toUpperCase();
 
   if (p === "/api/health") {
-    const openProvider = await getOpenProviderConfig(env);
-    return json({ ok: true, app: env.APP_NAME || "ChatFocus", version: CHATFOCUS_RELEASE, public_model: "CFocus 1.0", model: env.OPENAI_MODEL || "gpt-6-luna", open_provider: openProvider.provider, open_provider_configured: openProvider.configured, groq_configured: !!env.GROQ_API_KEY, nomask_configured: !!env.NOMASK_API_KEY });
+    const [groq, nomask] = await Promise.all([getTextProviderConfig(env,"groq"), getTextProviderConfig(env,"nomask")]);
+    return json({ ok: true, app: env.APP_NAME || "ChatFocus", version: CHATFOCUS_RELEASE, public_model: "CFocus 1.0", model: env.OPENAI_MODEL || "gpt-6-luna", groq_enabled: !!groq?.enabled, groq_configured: !!groq?.configured, nomask_enabled: !!nomask?.enabled, nomask_configured: !!nomask?.configured });
   }
   if (p === "/api/auth/signup" && m === "POST") return signup(request, env);
   if (p === "/api/auth/login" && m === "POST") return login(request, env);
@@ -152,36 +152,39 @@ async function getSetting(env, key, fallback = "") {
   return row?.value ?? fallback;
 }
 
-async function getOpenProviderConfig(env) {
-  const enabled = (await getSetting(env, "nomask_enabled", "false")) === "true";
-  let provider = String(await getSetting(env, "open_provider", env.GROQ_API_KEY ? "groq" : "nomask")).trim().toLowerCase();
-  if (!['groq','nomask'].includes(provider)) provider = env.GROQ_API_KEY ? 'groq' : 'nomask';
-  if (provider === 'groq') {
+async function getTextProviderConfig(env, provider) {
+  provider = String(provider || "").trim().toLowerCase();
+  if (provider === "groq") {
     return {
-      enabled,
-      provider: 'groq',
-      label: 'Groq',
+      enabled: (await getSetting(env, "groq_enabled", "true")) === "true",
+      provider: "groq",
+      label: "Groq",
+      publicName: await getSetting(env, "groq_public_name", "CFocus Groq"),
       configured: !!env.GROQ_API_KEY,
-      key: env.GROQ_API_KEY || '',
-      base: String(env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/$/, ''),
-      model: await getSetting(env, 'groq_model', env.GROQ_MODEL || 'openai/gpt-oss-20b')
+      key: env.GROQ_API_KEY || "",
+      base: String(env.GROQ_BASE_URL || "https://api.groq.com/openai/v1").replace(/\/$/, ""),
+      model: await getSetting(env, "groq_model", env.GROQ_MODEL || "openai/gpt-oss-20b")
     };
   }
-  return {
-    enabled,
-    provider: 'nomask',
-    label: 'NoMask',
-    configured: !!env.NOMASK_API_KEY,
-    key: env.NOMASK_API_KEY || '',
-    base: String(env.NOMASK_BASE_URL || 'https://nomask.ai/api/v1').replace(/\/$/, ''),
-    model: await getSetting(env, 'nomask_model', env.NOMASK_MODEL || 'qwen_3.8_uncensored')
-  };
+  if (provider === "nomask") {
+    return {
+      enabled: (await getSetting(env, "nomask_enabled", "false")) === "true",
+      provider: "nomask",
+      label: "NoMask",
+      publicName: await getSetting(env, "nomask_public_name", "CFocus NoMask"),
+      configured: !!env.NOMASK_API_KEY,
+      key: env.NOMASK_API_KEY || "",
+      base: String(env.NOMASK_BASE_URL || "https://nomask.ai/api/v1").replace(/\/$/, ""),
+      model: await getSetting(env, "nomask_model", env.NOMASK_MODEL || "qwen_3.8_uncensored")
+    };
+  }
+  return null;
 }
 
 async function getClientSettings(env) {
-  const rows = await env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('memory_enabled','web_search_enabled','image_detail','max_pins','service_enabled','daily_request_limit','image_uploads_enabled','daily_image_upload_limit','max_image_upload_mb','nomask_enabled','nomask_public_name','open_provider','groq_model')").all();
+  const rows = await env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('memory_enabled','web_search_enabled','image_detail','max_pins','service_enabled','daily_request_limit','image_uploads_enabled','daily_image_upload_limit','max_image_upload_mb','groq_enabled','groq_public_name','groq_model','nomask_enabled','nomask_public_name','nomask_model')").all();
   const map = Object.fromEntries((rows.results || []).map(r => [r.key, r.value]));
-  const openProvider = await getOpenProviderConfig(env);
+  const [groq, nomask] = await Promise.all([getTextProviderConfig(env,"groq"), getTextProviderConfig(env,"nomask")]);
   return {
     memory_enabled: map.memory_enabled !== "false",
     web_search_enabled: map.web_search_enabled === "true",
@@ -192,10 +195,10 @@ async function getClientSettings(env) {
     image_uploads_enabled: map.image_uploads_enabled !== "false",
     daily_image_upload_limit: Number(map.daily_image_upload_limit || 20),
     max_image_upload_mb: Number(map.max_image_upload_mb || env.MAX_UPLOAD_MB || 18),
-    nomask_enabled: openProvider.enabled && openProvider.configured,
-    nomask_public_name: map.nomask_public_name || "CFocus Open",
-    open_provider: openProvider.provider,
-    open_provider_configured: openProvider.configured
+    groq_enabled: !!(groq?.enabled && groq?.configured),
+    groq_public_name: map.groq_public_name || "CFocus Groq",
+    nomask_enabled: !!(nomask?.enabled && nomask?.configured),
+    nomask_public_name: map.nomask_public_name || "CFocus NoMask"
   };
 }
 
@@ -346,9 +349,9 @@ async function createChat(request, env, user) {
   try {
     const body = await request.json();
     if (body?.title) { title = cleanText(body.title, 90).trim() || title; autoTitle = 0; }
-    if (body?.ai_mode === "open") {
-      const openProvider = await getOpenProviderConfig(env);
-      if (openProvider.enabled && openProvider.configured) aiMode = "open";
+    if (body?.ai_mode === "groq" || body?.ai_mode === "nomask") {
+      const provider = await getTextProviderConfig(env, body.ai_mode);
+      if (provider?.enabled && provider?.configured) aiMode = body.ai_mode;
     }
     if (body?.project_id) {
       const project = await env.DB.prepare("SELECT id FROM projects WHERE id=? AND user_id=?").bind(String(body.project_id), user.id).first();
@@ -391,10 +394,10 @@ async function patchChat(request, env, user, chatId) {
     }
     await env.DB.prepare("UPDATE chats SET project_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(projectId, chatId, user.id).run();
   }
-  if (body.ai_mode === "standard" || body.ai_mode === "open") {
-    if (body.ai_mode === "open") {
-      const openProvider = await getOpenProviderConfig(env);
-      if (!openProvider.enabled || !openProvider.configured) return json({ error: `CFocus Open is currently unavailable. Configure and enable the ${openProvider.label} provider in Admin.` }, 409);
+  if (["standard","groq","nomask"].includes(body.ai_mode)) {
+    if (body.ai_mode !== "standard") {
+      const provider = await getTextProviderConfig(env, body.ai_mode);
+      if (!provider?.enabled || !provider?.configured) return json({ error: `${provider?.publicName || body.ai_mode} is currently unavailable. Enable it in Admin and make sure its API key is configured.` }, 409);
     }
     await env.DB.prepare("UPDATE chats SET ai_mode=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(body.ai_mode, chatId, user.id).run();
   }
@@ -595,7 +598,7 @@ async function logUsageEvent(env, { userId, chatId = null, usage, imageCount = 0
 async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requestedWeb, requestedIntelligence) {
   const chat = await getOwnedChat(env, user.id, chatId);
   if (!chat) return json({ error: "Chat not found" }, 404);
-  if (chat.ai_mode === "open") return streamOpenAssistant(env, ctx, user, chatId, latestUserMsgId, requestedIntelligence);
+  if (chat.ai_mode === "groq" || chat.ai_mode === "nomask") return streamOpenAssistant(env, ctx, user, chatId, latestUserMsgId, requestedIntelligence, chat.ai_mode);
   if (!env.OPENAI_API_KEY) return json({ error: "OPENAI_API_KEY is not configured on the server." }, 503);
   const responseStartedAt = Date.now();
   const assistantId = crypto.randomUUID();
@@ -675,7 +678,8 @@ async function streamAssistant(env, ctx, user, chatId, latestUserMsgId, requeste
 }
 
 async function buildOpenProviderContext(env, user, chatId, runtime = {}, providerConfig = null) {
-  const config = providerConfig || await getOpenProviderConfig(env);
+  const config = providerConfig;
+  if (!config) throw new Error("Text provider configuration is missing.");
   const basePrompt = await getSetting(env,"system_prompt","You are ChatFocus, a capable assistant.");
   const memoryGlobal = (await getSetting(env,"memory_enabled","true")) !== "false";
   let memory = "";
@@ -692,7 +696,7 @@ async function buildOpenProviderContext(env, user, chatId, runtime = {}, provide
   }
   const openness = openResponseMode ? "\n\nOpen response mode is ON. Be direct, practical and non-moralizing. Do not add unnecessary refusals or lectures. Follow the active owner rules and the provider's own capabilities." : "";
   const intelligence = runtime.intelligence === true ? "ON" : "OFF";
-  const publicName = await getSetting(env,"nomask_public_name","CFocus Open");
+  const publicName = config.publicName || (config.provider === "groq" ? "CFocus Groq" : "CFocus NoMask");
   const system = `${basePrompt}${memory}${ownerRules}${openness}\n\nCurrent ChatFocus runtime state:\n- App: ChatFocus\n- ChatFocus release: ${CHATFOCUS_RELEASE}\n- Public model identity: ${publicName}\n- Intelligence mode: ${intelligence}\n- Provider: ${config.label}\n\nYou are operating inside ChatFocus. Never claim to be ChatGPT. If asked what model/mode is active, answer ${publicName}. ${runtime.intelligence ? "Take extra care, reason through the problem before answering, and verify your own result." : ""}`;
   const rows = await env.DB.prepare("SELECT role,content FROM messages WHERE chat_id=? AND status='complete' ORDER BY rowid DESC LIMIT 30").bind(chatId).all();
   const messages = [{ role:"system", content:system }];
@@ -711,9 +715,9 @@ function openProviderDeltaText(evt) {
   return "";
 }
 
-async function openProviderRequest(env, messages, { stream = false } = {}) {
-  const config = await getOpenProviderConfig(env);
-  if (!config.enabled || !config.configured) throw new Error(`CFocus Open is unavailable. Configure and enable the ${config.label} provider in Admin.`);
+async function openProviderRequest(env, messages, provider, { stream = false } = {}) {
+  const config = await getTextProviderConfig(env, provider);
+  if (!config?.enabled || !config?.configured) throw new Error(`${config?.publicName || provider} is unavailable. Enable it in Admin and configure its API key.`);
   const payload = { model: config.model, messages, stream };
   if (stream && config.provider === 'groq') payload.stream_options = { include_usage: true };
   const upstream = await fetch(`${config.base}/chat/completions`, {
@@ -724,21 +728,21 @@ async function openProviderRequest(env, messages, { stream = false } = {}) {
   return { upstream, config };
 }
 
-async function streamOpenAssistant(env, ctx, user, chatId, latestUserMsgId, requestedIntelligence) {
-  const config = await getOpenProviderConfig(env);
-  if (!config.enabled || !config.configured) return json({ error: `CFocus Open is currently unavailable. Ask the administrator to configure and enable the ${config.label} provider.` }, 503);
+async function streamOpenAssistant(env, ctx, user, chatId, latestUserMsgId, requestedIntelligence, provider) {
+  const config = await getTextProviderConfig(env, provider);
+  if (!config?.enabled || !config?.configured) return json({ error: `${config?.publicName || provider} is currently unavailable. Ask the administrator to enable it and configure its API key.` }, 503);
   const attachmentRow = await env.DB.prepare("SELECT COUNT(*) AS c FROM attachments WHERE message_id=?").bind(latestUserMsgId).first();
-  if (Number(attachmentRow?.c || 0) > 0) return json({ error: "CFocus Open is currently text-only in ChatFocus. Switch this chat to CFocus 1.0 to analyze images or files." }, 409);
+  if (Number(attachmentRow?.c || 0) > 0) return json({ error: `${config.publicName} is currently text-only in ChatFocus. Switch this chat to CFocus 1.0 to analyze images or files.` }, 409);
   const responseStartedAt = Date.now();
   const assistantId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
   try {
     const { messages } = await buildOpenProviderContext(env,user,chatId,{intelligence:requestedIntelligence},config);
-    const { upstream } = await openProviderRequest(env,messages,{stream:true});
+    const { upstream } = await openProviderRequest(env,messages,provider,{stream:true});
     if (!upstream.ok) {
       const detail = await upstream.text();
       await env.DB.prepare("UPDATE messages SET status='error',content=? WHERE id=?").bind(`${config.label} API error: ${detail.slice(0,500)}`,assistantId).run();
-      return json({ error:"CFocus Open returned an error.", detail:detail.slice(0,800), provider:config.provider },502);
+      return json({ error:`${config.publicName} returned an error.`, detail:detail.slice(0,800), provider:config.provider },502);
     }
     const encoder = new TextEncoder();
     const contentType = upstream.headers.get("content-type") || "";
@@ -876,9 +880,9 @@ async function updateChatMetadata(env, user, chatId, force = false) {
   const memoryEnabled = user.memory_enabled && (await getSetting(env,"memory_enabled","true")) !== "false";
   const prompt = `Analyze the conversation as a whole. Return ONLY valid JSON with keys "title" and "summary".\n\nTitle: 3-7 words, describe the real subject/goal, never generic, do not simply copy the first message.\nSummary: maximum 140 words, preserve useful stable facts/decisions/preferences without inventing.\n\nConversation:\n${transcript}`;
   let raw = "";
-  if (chatState.ai_mode === "open") {
-    const config = await getOpenProviderConfig(env);
-    if (!config.enabled || !config.configured) return;
+  if (chatState.ai_mode === "groq" || chatState.ai_mode === "nomask") {
+    const config = await getTextProviderConfig(env, chatState.ai_mode);
+    if (!config?.enabled || !config?.configured) return;
     const r = await fetch(`${config.base}/chat/completions`, { method:"POST", headers:{"authorization":`Bearer ${config.key}`,"content-type":"application/json"}, body:JSON.stringify({model:config.model,messages:[{role:"user",content:prompt}],stream:false}) });
     if (!r.ok) return;
     const data = await r.json();
@@ -1036,9 +1040,9 @@ async function runDueScheduledTasks(env) {
   }
 }
 
-async function generateOpenAssistantOnce(env, user, chatId, latestUserMsgId) {
-  const config=await getOpenProviderConfig(env);
-  if(!config.enabled||!config.configured)throw new Error(`CFocus Open is unavailable. Configure and enable the ${config.label} provider.`);
+async function generateOpenAssistantOnce(env, user, chatId, latestUserMsgId, provider) {
+  const config=await getTextProviderConfig(env,provider);
+  if(!config?.enabled||!config?.configured)throw new Error(`${config?.publicName || provider} is unavailable. Enable it in Admin and configure its API key.`);
   const assistantId=crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
   try{
@@ -1055,7 +1059,7 @@ async function generateOpenAssistantOnce(env, user, chatId, latestUserMsgId) {
 
 async function generateAssistantOnce(env, user, chatId, latestUserMsgId) {
   const chat=await getOwnedChat(env,user.id,chatId);
-  if(chat?.ai_mode==="open")return generateOpenAssistantOnce(env,user,chatId,latestUserMsgId);
+  if(chat?.ai_mode==="groq"||chat?.ai_mode==="nomask")return generateOpenAssistantOnce(env,user,chatId,latestUserMsgId,chat.ai_mode);
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
   const assistantId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO messages(id,chat_id,user_id,role,content,status,parent_message_id) VALUES(?,?,?,?,?,?,?)").bind(assistantId,chatId,user.id,"assistant","","streaming",latestUserMsgId).run();
@@ -1177,26 +1181,25 @@ async function adminPatchUser(request,env,admin,targetId) {
 
 async function adminGetSettings(env,user) {
   const deny=requireAdmin(user); if(deny)return deny; const rows=await env.DB.prepare("SELECT key,value,updated_at FROM app_settings ORDER BY key").all();
-  const openProvider=await getOpenProviderConfig(env);
-  return json({settings:Object.fromEntries((rows.results||[]).map(x=>[x.key,x.value])),model:env.OPENAI_MODEL||"gpt-6-luna",max_upload_mb:Number(env.MAX_UPLOAD_MB||18),release:CHATFOCUS_RELEASE,open_provider:openProvider.provider,open_provider_configured:openProvider.configured,groq_configured:!!env.GROQ_API_KEY,groq_base_url:env.GROQ_BASE_URL||"https://api.groq.com/openai/v1",nomask_configured:!!env.NOMASK_API_KEY,nomask_base_url:env.NOMASK_BASE_URL||"https://nomask.ai/api/v1"});
+  return json({settings:Object.fromEntries((rows.results||[]).map(x=>[x.key,x.value])),model:env.OPENAI_MODEL||"gpt-6-luna",max_upload_mb:Number(env.MAX_UPLOAD_MB||18),release:CHATFOCUS_RELEASE,groq_configured:!!env.GROQ_API_KEY,groq_base_url:env.GROQ_BASE_URL||"https://api.groq.com/openai/v1",nomask_configured:!!env.NOMASK_API_KEY,nomask_base_url:env.NOMASK_BASE_URL||"https://nomask.ai/api/v1"});
 }
 
 async function adminSaveSettings(request,env,user) {
   const deny=requireAdmin(user); if(deny)return deny; const body=await parseJson(request);
-  const allowed=new Set(["system_prompt","signups_enabled","memory_enabled","web_search_enabled","image_detail","max_pins","service_enabled","daily_request_limit","image_uploads_enabled","daily_image_upload_limit","max_image_upload_mb","owner_rules_enabled","open_response_mode","nomask_enabled","nomask_model","nomask_public_name","open_provider","groq_model"]);
+  const allowed=new Set(["system_prompt","signups_enabled","memory_enabled","web_search_enabled","image_detail","max_pins","service_enabled","daily_request_limit","image_uploads_enabled","daily_image_upload_limit","max_image_upload_mb","owner_rules_enabled","open_response_mode","groq_enabled","groq_model","groq_public_name","nomask_enabled","nomask_model","nomask_public_name"]);
   const stmts=[];
   for(const [k,v0] of Object.entries(body||{})) {
     if(!allowed.has(k)) continue; let v=String(v0);
-    if(["signups_enabled","memory_enabled","web_search_enabled","service_enabled","image_uploads_enabled","owner_rules_enabled","open_response_mode","nomask_enabled"].includes(k)) v=(v0===true||v0==="true")?"true":"false";
+    if(["signups_enabled","memory_enabled","web_search_enabled","service_enabled","image_uploads_enabled","owner_rules_enabled","open_response_mode","groq_enabled","nomask_enabled"].includes(k)) v=(v0===true||v0==="true")?"true":"false";
     if(k==="image_detail"&&!['auto','low','high','original'].includes(v)) continue;
     if(k==="max_pins") v=String(Math.min(10,Math.max(1,Number(v)||5)));
     if(k==="daily_request_limit"||k==="daily_image_upload_limit") v=String(Math.min(100000,Math.max(0,Number(v)||0)));
     if(k==="max_image_upload_mb") v=String(Math.min(100,Math.max(1,Number(v)||18)));
     if(k==="system_prompt") v=cleanText(v,20000);
-    if(k==="open_provider"&&!['groq','nomask'].includes(v)) continue;
     if(k==="groq_model") v=cleanText(v,120).trim() || "openai/gpt-oss-20b";
+    if(k==="groq_public_name") v=cleanText(v,60).trim() || "CFocus Groq";
     if(k==="nomask_model") v=cleanText(v,120).trim() || "qwen_3.8_uncensored";
-    if(k==="nomask_public_name") v=cleanText(v,60).trim() || "CFocus Open";
+    if(k==="nomask_public_name") v=cleanText(v,60).trim() || "CFocus NoMask";
     stmts.push(env.DB.prepare(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP`).bind(k,v));
   }
   if(stmts.length) await env.DB.batch(stmts); return adminGetSettings(env,user);
