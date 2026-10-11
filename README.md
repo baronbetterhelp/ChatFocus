@@ -1,38 +1,40 @@
-# ChatFocus V1.22 — Groq + NoMask CFocus Open
+# ChatFocus V1.23 — Separate Groq and NoMask Modes
 
-This release adds Groq as a first-class CFocus Open text provider while preserving NoMask as an optional fallback/provider choice. CFocus 1.0 remains the primary GPT-6 Luna multimodal mode for images, files, PDFs, web search and Intelligence.
+This release separates the alternate text providers completely. Groq and NoMask are no longer grouped under one CFocus Open switch.
 
 ## What changed
 
-- Added Groq OpenAI-compatible chat-completions support.
-- Default Groq model: `openai/gpt-oss-20b`.
-- Default Groq base URL: `https://api.groq.com/openai/v1`.
-- Admin can enable/disable CFocus Open, choose **Groq** or **NoMask**, and set the provider model.
-- CFocus Open remains text-only. Uploading an image/file switches the chat to CFocus 1.0.
-- AI Usage now separates OpenAI, Groq and NoMask requests.
-- Provider API keys remain server-side Cloudflare secrets.
+- **CFocus Groq** is now its own text mode.
+- **CFocus NoMask** is now its own text mode.
+- Each provider has its own independent **ON/OFF switch** in Admin Console → Limits & Access → Product Defaults.
+- Each provider has its own public mode name, model setting and API configuration status.
+- NoMask is disabled by default in this migration so it will not be used before you decide to fund/enable it.
+- Existing V1.22 chats stored as the old shared `open` mode are migrated to `groq` so they continue working through Groq.
+- Images/files still switch the current conversation back to **CFocus 1.0**, because the Groq/NoMask modes in this release are text-only.
+- Usage tracking remains separated by provider (`openai`, `groq`, `nomask`).
 
-## Cloudflare secrets
+## Required Cloudflare secrets
 
-Add these under Worker → Settings → Runtime variables and secrets:
+For CFocus Groq:
 
 ```text
-OPENAI_API_KEY
 GROQ_API_KEY
 ```
 
-`NOMASK_API_KEY` is optional if you still want NoMask available.
-
-Do not put secret API keys in `wrangler.toml` or frontend files.
-
-## Deploy
-
-The existing deploy command can stay:
+For CFocus NoMask, only when you decide to use it:
 
 ```text
+NOMASK_API_KEY
+```
+
+## Deployment
+
+The existing deployment command still works:
+
+```bash
 npm run db:remote && npx wrangler deploy
 ```
 
-Migration `0009_groq_provider.sql` adds the Groq provider defaults.
+Migration `0010_separate_text_modes.sql` creates the independent provider switches and converts the old shared `open` chat mode to `groq`.
 
-After deployment, open **Admin Console → Limits & Access → Product Defaults**. Turn on **CFocus Open**, select **Groq**, confirm the Groq API status shows configured, and save.
+After deployment, open **Admin Console → Limits & Access → Product Defaults**. You will see separate switches for **CFocus Groq** and **CFocus NoMask**. Leave NoMask off until you want to use it.
