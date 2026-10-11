@@ -1,62 +1,38 @@
-# ChatFocus V1.19 — AI Usage & CallFocus-Style Cost Tracking
+# ChatFocus V1.22 — Groq + NoMask CFocus Open
 
-V1.19 adds a dedicated AI Usage dashboard to the Admin Control Center and tightens the low-cost GPT-6 Luna pipeline so ChatFocus usage can be monitored the same way as CallFocus.
+This release adds Groq as a first-class CFocus Open text provider while preserving NoMask as an optional fallback/provider choice. CFocus 1.0 remains the primary GPT-6 Luna multimodal mode for images, files, PDFs, web search and Intelligence.
 
-## Admin → AI Usage
+## What changed
 
-The new dashboard shows:
+- Added Groq OpenAI-compatible chat-completions support.
+- Default Groq model: `openai/gpt-oss-20b`.
+- Default Groq base URL: `https://api.groq.com/openai/v1`.
+- Admin can enable/disable CFocus Open, choose **Groq** or **NoMask**, and set the provider model.
+- CFocus Open remains text-only. Uploading an image/file switches the chat to CFocus 1.0.
+- AI Usage now separates OpenAI, Groq and NoMask requests.
+- Provider API keys remain server-side Cloudflare secrets.
 
-- Completed AI replies
-- Images analyzed
-- Total OpenAI requests
-- Estimated API cost
-- Input tokens
-- Cached input tokens
-- Output tokens
-- Last updated time
-- Recent request cards with customer, time, images, token usage, request type and estimated cost
+## Cloudflare secrets
 
-## Cost formula
+Add these under Worker → Settings → Runtime variables and secrets:
 
-For normal GPT-6 Luna Standard requests up to 272K input tokens:
+```text
+OPENAI_API_KEY
+GROQ_API_KEY
+```
 
-- Uncached input: $0.10 / 1M tokens
-- Cached input: $0.01 / 1M tokens
-- Output: $0.50 / 1M tokens
-- Web search: $0.01 per recorded call
+`NOMASK_API_KEY` is optional if you still want NoMask available.
 
-For GPT-6 Luna requests over 272K input tokens, V1.19 uses the current long-context Standard rates in the estimate.
+Do not put secret API keys in `wrangler.toml` or frontend files.
 
-This is the same token-cost formula used by the CallFocus AI Usage display shown during development.
+## Deploy
 
-## Low-cost behavior retained/improved
+The existing deploy command can stay:
 
-- GPT-6 Luna
-- Standard processing
-- Low image detail by default
-- Images compressed client-side before upload
-- Only images/files from the current user turn are sent to OpenAI
-- Historical images are not resent on every follow-up
-- Normal responses use low reasoning
-- High reasoning is used only when the user explicitly enables Intelligence
-- Chat title/memory metadata generation is reduced: immediate while the title is generic, then only every 8 completed messages
-- Metadata uses `reasoning: none` with a small output cap
-- Internal metadata requests are tracked in AI Usage but do not consume the customer's daily visible AI-request allowance
-
-## Upgrade from V1.18
-
-Replace/add:
-
-- `public/index.html`
-- `public/app.js`
-- `public/styles.css`
-- `src/worker.js`
-- `migrations/0007_ai_usage_costs.sql`
-
-Deploy with:
-
-```bash
+```text
 npm run db:remote && npx wrangler deploy
 ```
 
-No API key, D1 binding, R2 binding, or Wrangler configuration change is required.
+Migration `0009_groq_provider.sql` adds the Groq provider defaults.
+
+After deployment, open **Admin Console → Limits & Access → Product Defaults**. Turn on **CFocus Open**, select **Groq**, confirm the Groq API status shows configured, and save.
